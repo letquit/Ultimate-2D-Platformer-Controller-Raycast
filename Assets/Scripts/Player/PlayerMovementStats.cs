@@ -20,11 +20,12 @@ public class PlayerMovementStats : ScriptableObject
 
     [Header("Grounded/Collision Checks")] 
     public LayerMask GroundLayer;
-    public float GroundDetectionRayLength = 0.02f;
-    public float HeadDetectionRayLength = 0.02f;
-    [Range(0f, 1f)] public float HeadWidth = 0.75f;
-    public float WallDetectionRayLength = 0.125f;
-    [Range(0.01f, 2f)] public float WallDetectionRayHeightMultiplier = 0.9f;
+
+    [Header("Hand Bump Slide")]
+    public bool UseHeadBumpSlide = true;
+    [Range(1f, 50f)] public float HeadBumpSlideSpeed = 13f;
+    [Range(0.01f, 1f)] public float HeadBumpBoxWidth = 0.3f;
+    [Range(0.01f, 0.5f)] public float HeadBumpBoxHeight = 0.1f;
 
     [Header("Jump")]
     public float JumpHeight = 6.5f;
@@ -32,7 +33,7 @@ public class PlayerMovementStats : ScriptableObject
     public float TimeTillJumpApex = 0.35f;
     [Range(0.01f, 5f)] public float GravityOnReleaseMultiplier = 2f;
     public float MaxFallSpeed = 26f;
-    [Range(1, 5)] public int NumberOfJumpsAllowed = 2;
+    [Range(0, 5)] public int NumberOfAirJumpsAllowed = 1;
 
     [Header("Reset Jump Options")] 
     public bool ResetJumpsOnWallSlide = true;
@@ -66,15 +67,18 @@ public class PlayerMovementStats : ScriptableObject
     public bool ResetDashOnWallSlide = true;
     [Range(0, 5)] public int NumberOfDashes = 2;
     [Range(0f, 0.5f)] public float DashDiagonallyBias = 0.4f;
+    [Range(0f, 1f)] public float DashBufferTime = 0.125f;
 
     [Header("Dash Cancel Time")]
     [Range(0.01f, 5f)] public float DashGravityOnReleaseMultiplier = 1f;
     [Range(0.02f, 0.3f)] public float DashTimeForUpwardsCancel = 0.027f;
     
     [Header("Debug")]
-    public bool DebugShowIsGroundedBox = false;
+    public bool DebugShowIsGrounded = false;
+    public bool DebugShowHeadRays = false;
+    public bool DebugShowWallHit = false;
     public bool DebugShowHeadBumpBox = false;
-    public bool DebugShowWallHitBox = false;
+    [Range(0f, 1f)] public float ExtraRayDebugDistance = 0.25f;
 
     [Header("JumpVisualization Tool")] 
     public bool ShowWalkJumpArc = false;
@@ -107,6 +111,9 @@ public class PlayerMovementStats : ScriptableObject
     public float InitialWallJumpVelocity { get; private set; }
     public float AdjustedWallJumpHeight { get; private set; }
     
+    // Dash
+    public float DashTargetApexHeight { get; private set; }
+    
     private void OnValidate()
     {
         CalculateValues();
@@ -128,5 +135,14 @@ public class PlayerMovementStats : ScriptableObject
         AdjustedWallJumpHeight = WallJumpDirection.y * JumpHeightCompensationFactor;
         WallJumpGravity = -(2f * AdjustedWallJumpHeight) / Mathf.Pow(TimeTillJumpApex, 2f);
         InitialWallJumpVelocity = Mathf.Abs(WallJumpGravity) * TimeTillJumpApex;
+        
+        // Dash
+        float step = Time.fixedDeltaTime;
+        float dashTimeRounded = Mathf.Ceil(DashTime / step) * step;
+        float dashCancelTimeRounded = Mathf.Ceil(DashTimeForUpwardsCancel / step) * step;
+
+        float dashConstantPhaseHeight = DashSpeed * dashTimeRounded;
+        float dashCancelPhaseHeight = 0.5f * DashSpeed * dashCancelTimeRounded;
+        DashTargetApexHeight = dashConstantPhaseHeight + dashCancelPhaseHeight;
     }
 }
