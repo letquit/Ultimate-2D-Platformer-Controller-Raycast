@@ -589,7 +589,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::PlayerMovement
   MoveStats: {fileID: 11400000, guid: f34a0712e8929264d9ab76c12940a3dd, type: 2}
-  _coll: {fileID: 0}
+  _coll: {fileID: 665872635}
+  _visualsTransform: {fileID: 2095765124}
   Velocity: {x: 0, y: 0}
 --- !u!50 &665872633
 Rigidbody2D:
@@ -666,7 +667,7 @@ BoxCollider2D:
   m_UsedByEffector: 0
   m_CompositeOperation: 0
   m_CompositeOrder: 0
-  m_Offset: {x: -0.39535367, y: 0.22598955}
+  m_Offset: {x: 0, y: 0.22000003}
   m_SpriteTilingProperty:
     border: {x: 0, y: 0, z: 0, w: 0}
     pivot: {x: 0, y: 0}
@@ -676,7 +677,7 @@ BoxCollider2D:
     drawMode: 0
     adaptiveTiling: 0
   m_AutoTiling: 0
-  m_Size: {x: 1.1127889, y: 2.3505955}
+  m_Size: {x: 1.16, y: 2.35}
   m_EdgeRadius: 0
 --- !u!1 &767797986
 GameObject:

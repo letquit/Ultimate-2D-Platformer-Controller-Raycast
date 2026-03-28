@@ -22,6 +22,18 @@ public class MovementController : MonoBehaviour
     public int HeadBumpSlideDirection { get; private set; }
     public bool IsHittingCeilingCenter { get; private set; }
     public bool IsHittingBothCorners { get; private set; }
+    
+    public bool IsClimbingSlope { get; private set; }
+    public bool WasClimbingSlopeLastFrame { get; private set; }
+    public bool IsDescendingSlope { get; private set; }
+    public float SlopeAngle { get; private set; }
+    public Vector2 SlopeNormal { get; private set; }
+    public float WallAngle { get; private set; }
+    public bool IsSliding { get; private set; }
+    public bool IsOnSlideableSlope { get; private set; }
+    public int FaceDirection { get; private set; }
+    public float CeilingAngle { get; private set; }
+    public Vector2 CeilingNormal { get; private set; }
 
     private PlayerMovement _playerMovement;
     private Rigidbody2D _rb;
@@ -40,6 +52,8 @@ public class MovementController : MonoBehaviour
         _rb = GetComponent<Rigidbody2D>();
         _playerMovement = GetComponent<PlayerMovement>();
         _moveStats = _playerMovement.MoveStats;
+
+        FaceDirection = 1;
     }
 
     private void Start()
@@ -69,6 +83,17 @@ public class MovementController : MonoBehaviour
         HeadBumpSlideDirection = 0;
         IsHittingCeilingCenter = false;
         IsHittingBothCorners = false;
+
+        WasClimbingSlopeLastFrame = IsClimbingSlope;
+        IsClimbingSlope = false;
+        IsDescendingSlope = false;
+        SlopeAngle = 0f;
+        SlopeNormal = Vector2.zero;
+        WallAngle = 0f;
+        IsSliding = false;
+        IsOnSlideableSlope = false;
+        CeilingAngle = 0f;
+        CeilingNormal = Vector2.zero;
     }
 
     private void CheckCeilingBoxCast(Vector2 velocity)
@@ -119,15 +144,11 @@ public class MovementController : MonoBehaviour
         float directionX = Mathf.Sign(velocity.x);
         float rayLength = Mathf.Abs(velocity.x) + CollisionPadding;
 
-        bool hitLeftCorner = false;
-        bool hitRightCorner = false;
-
         for (int i = 0; i < NumOfHorizontalRays; i++)
         {
             Vector2 rayOrigin = (directionX == -1) ? RayCastCorners.bottomLeft : RayCastCorners.bottomRight;
             rayOrigin += Vector2.up * (_horizontalRaySpace * i);
-            RaycastHit2D hit =
-                Physics2D.Raycast(rayOrigin, Vector2.right * directionX, rayLength, _moveStats.GroundLayer);
+            RaycastHit2D hit = Physics2D.Raycast(rayOrigin, Vector2.right * directionX, rayLength, _moveStats.GroundLayer);
 
             if (hit)
             {
@@ -138,32 +159,9 @@ public class MovementController : MonoBehaviour
                 {
                     IsCollidingLeft = true;
                 }
-                else
+                else if (directionX == 1)
                 {
                     IsCollidingRight = true;
-                    
-                    if (i == 0) hitLeftCorner = true;
-                    if (i == NumOfHorizontalRays - 1) hitRightCorner = true;
-
-                    if (_moveStats.UseHeadBumpSlide)
-                    {
-                        int slideDir = 0;
-                        if (i == 0) slideDir = 1;
-                        else if (i == NumOfVerticalRays - 1) slideDir = -1;
-
-                        if (slideDir != 0)
-                        {
-                            Vector2 slideCheckRayOrigin = hit.point + (Vector2.down * CollisionPadding * 2);
-                            float slideCheckRayLength = CollisionPadding * 2;
-                            RaycastHit2D slideCheckHit = Physics2D.Raycast(slideCheckRayOrigin,
-                                Vector2.right * slideDir, slideCheckRayLength, _moveStats.GroundLayer);
-
-                            if (!slideCheckHit)
-                            {
-                                HeadBumpSlideDirection = slideDir;
-                            }
-                        }
-                    }
                 }
             }
 
@@ -183,37 +181,157 @@ public class MovementController : MonoBehaviour
 
             #endregion
         }
-        
-        IsHittingBothCorners = hitLeftCorner && hitRightCorner;
     }
 
     private void ResolveVerticalMovement(ref Vector2 velocity)
     {
-        float directionY = Mathf.Sign(velocity.y);
-        float rayLength = Mathf.Abs(velocity.y) + CollisionPadding;
+        bool hitLeftCorner = false;
+        bool hitRightCorner = false;
 
+        #region Ceiling Check
+
+        if (velocity.y > 0f)
+        {
+            float upwardRayLength = Mathf.Abs(velocity.y) + CollisionPadding;
+            for (int i = 0; i < NumOfVerticalRays; i++)
+            {
+                Vector2 rayOrigin = RayCastCorners.topLeft;
+
+                float horizontalProjection = velocity.x;
+                if (_playerMovement.IsHeadBumpSliding)
+                {
+                    horizontalProjection = 0f;
+                }
+
+                rayOrigin += Vector2.right * (_verticalRaySpace * i + horizontalProjection);
+                RaycastHit2D hit = Physics2D.Raycast(rayOrigin, Vector2.up, upwardRayLength, _moveStats.GroundLayer);
+
+                if (hit)
+                {
+                    float currentCeilingAngle;
+                    if (hit.distance == 0f)
+                    {
+                        velocity.y = 0f;
+
+                        Vector2 safetyRayOrigin = rayOrigin + (Vector2.down * CollisionPadding * 2);
+                        RaycastHit2D safetyHit = Physics2D.Raycast(safetyRayOrigin, Vector2.up, CollisionPadding * 3,
+                            _moveStats.GroundLayer);
+
+                        if (safetyHit)
+                        {
+                            currentCeilingAngle = Mathf.Round(Vector2.Angle(safetyHit.normal, Vector2.down));
+                            CeilingNormal = safetyHit.normal;
+                        }
+                        else
+                        {
+                            currentCeilingAngle = 0f;
+                            CeilingNormal = Vector2.down;
+                        }
+                    }
+
+                    else
+                    {
+                        velocity.y = (hit.distance - CollisionPadding);
+                        upwardRayLength = hit.distance;
+                        currentCeilingAngle = Mathf.Round(Vector2.Angle(hit.normal, Vector2.down));
+                        CeilingNormal = hit.normal;
+                    }
+
+                    IsCollidingAbove = true;
+
+                    if (i == 0)
+                    {
+                        hitLeftCorner = true;
+                    }
+
+                    if (i == NumOfVerticalRays - 1)
+                    {
+                        hitRightCorner = true;
+                    }
+
+                    if (currentCeilingAngle > CeilingAngle)
+                    {
+                        CeilingAngle = currentCeilingAngle;
+                        CeilingNormal = hit.normal;
+                    }
+                    
+                    if (_moveStats.UseHeadBumpSlide && currentCeilingAngle <= _moveStats.MaxSlopeAngleForHeadBump)
+                    {
+                        int slideDir = 0;
+                        if (i == 0) slideDir = 1;
+                        else if (i == NumOfVerticalRays - 1) slideDir = -1;
+
+                        if (slideDir != 0)
+                        {
+                            Vector2 slideCheckRayOrigin = hit.point + (Vector2.down * CollisionPadding * 2);
+                            float slideCheckRayLength = CollisionPadding * 2;
+                            RaycastHit2D slideCheckHit = Physics2D.Raycast(slideCheckRayOrigin,
+                                Vector2.right * slideDir, slideCheckRayLength, _moveStats.GroundLayer);
+
+                            if (!slideCheckHit)
+                            {
+                                HeadBumpSlideDirection = slideDir;
+                            }
+                        }
+                    }
+                }
+                
+                #region Debug Visualization
+
+                if (_moveStats.DebugShowHeadRays)
+                {
+                    float debugRayLength = _moveStats.ExtraRayDebugDistance;
+                    Vector2 debugRayOrigin = RayCastCorners.topLeft + Vector2.right * (_verticalRaySpace * i);
+                    bool didHit = Physics2D.Raycast(debugRayOrigin, Vector2.up, debugRayLength, _moveStats.GroundLayer);
+                    Color rayColor = didHit ? Color.cyan : Color.red;
+
+                    if (i == 0 || i == NumOfVerticalRays - 1)
+                    {
+                        rayColor = didHit ? Color.green : Color.magenta;
+                    }
+                    Debug.DrawRay(debugRayOrigin, Vector2.up * debugRayLength, rayColor);
+                }
+
+                #endregion
+            }
+        }
+
+        #endregion
+
+        #region Ground Check
+
+        float downwardRayLength;
+
+        if (velocity.y < 0)
+        {
+            downwardRayLength = Mathf.Abs(velocity.y) + CollisionPadding;
+        }
+        else
+        {
+            downwardRayLength = CollisionPadding * 2;
+        }
+
+        float smallestHitDistance = float.MaxValue;
+        RaycastHit2D groundHit = new RaycastHit2D();
+        bool foundGround = false;
+        
         for (int i = 0; i < NumOfVerticalRays; i++)
         {
-            Vector2 rayOrigin = (directionY == -1) ? RayCastCorners.bottomLeft : RayCastCorners.topLeft;
+            Vector2 rayOrigin = RayCastCorners.bottomLeft;
             rayOrigin += Vector2.right * (_verticalRaySpace * i + velocity.x);
 
-            RaycastHit2D hit = Physics2D.Raycast(rayOrigin, Vector2.up * directionY, rayLength, _moveStats.GroundLayer);
-
+            RaycastHit2D hit = Physics2D.Raycast(rayOrigin, Vector2.down, downwardRayLength, _moveStats.GroundLayer);
+            
             if (hit)
             {
-                velocity.y = (hit.distance - CollisionPadding) * directionY;
-                rayLength = hit.distance;
-
-                if (directionY == -1)
+                if (hit.distance < smallestHitDistance)
                 {
-                    IsCollidingBelow = true;
-                }
-                else
-                {
-                    IsCollidingAbove = true;
+                    smallestHitDistance = hit.distance;
+                    groundHit = hit;
+                    foundGround = true;
                 }
             }
-
+            
             #region Debug Visualization
 
             if (_moveStats.DebugShowIsGrounded)
@@ -225,24 +343,42 @@ public class MovementController : MonoBehaviour
                 Debug.DrawRay(debugRayOrigin, Vector2.down * debugRayLength, rayColor);
             }
 
-            if (_moveStats.DebugShowHeadRays)
-            {
-                float debugRayLength = _moveStats.ExtraRayDebugDistance;
-                Vector2 debugRayOrigin = RayCastCorners.topLeft + Vector2.right * (_verticalRaySpace * i);
-                bool didHit = Physics2D.Raycast(debugRayOrigin, Vector2.up, debugRayLength, _moveStats.GroundLayer);
-                Color rayColor = didHit ? Color.cyan : Color.red;
-
-                if (i == 0 || i == NumOfVerticalRays - 1)
-                {
-                    rayColor = didHit ? Color.green : Color.magenta;
-                }
-                
-                Debug.DrawRay(debugRayOrigin, Vector2.up * debugRayLength, rayColor);
-            }
-
             #endregion
         }
+
+        if (foundGround)
+        {
+            IsCollidingBelow = true;
+            if (velocity.y <= 0)
+            {
+                velocity.y = (groundHit.distance - CollisionPadding) * -1;
+            }
+
+            float slopeAngle = Mathf.Round(Vector2.Angle(groundHit.normal, Vector2.up));
+            bool isGroundAWall = slopeAngle >= _moveStats.MinAngleForWallSlide &&
+                                 slopeAngle <= _moveStats.MaxAngleForWallSlide;
+            if (!isGroundAWall)
+            {
+                if (slopeAngle > 0f)
+                {
+                    SlopeAngle = slopeAngle;
+                    SlopeNormal = groundHit.normal;
+                }
+            }
+        }
+        else
+        {
+            if (IsOnSlideableSlope)
+            {
+                IsSliding = true;
+            }
+        }
+        
+        #endregion
+        
+        IsHittingBothCorners = hitLeftCorner && hitRightCorner;
     }
+            
     
     private void UpdateRayCastCorners()
     {
