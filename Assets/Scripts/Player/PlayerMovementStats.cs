@@ -92,6 +92,7 @@ public class PlayerMovementStats : ScriptableObject
     public bool DebugShowWallHit = false;
     public bool DebugShowSlopeNormal = false;
     public bool DebugShowDashAngle = false;
+    public bool DebugShowDescendSlopeRay = false;
     [Range(0f, 1f)] public float ExtraRayDebugDistance = 0.25f;
 
     [Header("JumpVisualization Tool")] 

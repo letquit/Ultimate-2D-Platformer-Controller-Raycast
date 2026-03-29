@@ -67,6 +67,16 @@ public class MovementController : MonoBehaviour
         ResetCollisionStates();
         CheckCeilingBoxCast(velocity);
 
+        if (velocity.y <= 0f && !_playerMovement.IsDashing && !WasClimbingSlopeLastFrame)
+        {
+            DescendSlope(ref velocity);
+        }
+
+        if (velocity.x != 0)
+        {
+            FaceDirection = (int)Mathf.Sign(velocity.x);
+        }
+
         ResolveHorizontalMovement(ref velocity);
         ResolveVerticalMovement(ref velocity);
         
@@ -142,7 +152,16 @@ public class MovementController : MonoBehaviour
     private void ResolveHorizontalMovement(ref Vector2 velocity)
     {
         float directionX = Mathf.Sign(velocity.x);
+        if (velocity.x == 0f)
+        {
+            directionX = FaceDirection;
+        }
         float rayLength = Mathf.Abs(velocity.x) + CollisionPadding;
+
+        if (Mathf.Abs(velocity.x) < CollisionPadding)
+        {
+            rayLength = CollisionPadding * 2;
+        }
 
         for (int i = 0; i < NumOfHorizontalRays; i++)
         {
@@ -152,17 +171,60 @@ public class MovementController : MonoBehaviour
 
             if (hit)
             {
+                float slopeAngle = Mathf.Round(Vector2.Angle(hit.normal, Vector2.up));
+                bool isSlideableSlope = slopeAngle > _moveStats.MaxSlopeAngle && slopeAngle < _moveStats.MinAngleForWallSlide;
+
+                if (isSlideableSlope)
+                {
+                    IsOnSlideableSlope = true;
+                
+                    velocity.x = (hit.distance - CollisionPadding) * directionX;
+                    rayLength = hit.distance;
+
+                    if (IsClimbingSlope)
+                    {
+                        velocity.y = Mathf.Tan(SlopeAngle * Mathf.Deg2Rad) * Mathf.Abs(velocity.x);
+                    }
+
+                    if (directionX == -1)
+                    {
+                        IsCollidingLeft = true;
+                    }
+                    else if (directionX == 1)
+                    {
+                        IsCollidingRight = true;
+                    }
+                    
+                    continue;
+                }
+
+                if (IsSliding)
+                {
+                    continue;
+                }
+
+                if (i == 0 && slopeAngle <= _moveStats.MaxSlopeAngle)
+                {
+                    ClimbSlope(ref velocity, slopeAngle, hit.normal);
+                    continue;
+                }
+
+                if (IsClimbingSlope && slopeAngle <= _moveStats.MaxSlopeAngle)
+                {
+                    continue;
+                }
+                
                 velocity.x = (hit.distance - CollisionPadding) * directionX;
                 rayLength = hit.distance;
+                WallAngle = slopeAngle;
 
-                if (directionX == -1)
+                if (IsClimbingSlope)
                 {
-                    IsCollidingLeft = true;
+                    velocity.y = Mathf.Tan(SlopeAngle * Mathf.Deg2Rad) * Mathf.Abs(velocity.x);
                 }
-                else if (directionX == 1)
-                {
-                    IsCollidingRight = true;
-                }
+
+                IsCollidingLeft = directionX == -1;
+                IsCollidingRight = directionX == 1;
             }
 
             #region Debug Visualization
@@ -281,7 +343,7 @@ public class MovementController : MonoBehaviour
                 if (_moveStats.DebugShowHeadRays)
                 {
                     float debugRayLength = _moveStats.ExtraRayDebugDistance;
-                    Vector2 debugRayOrigin = RayCastCorners.topLeft + Vector2.right * (_verticalRaySpace * i);
+                    Vector2 debugRayOrigin = RayCastCorners.topLeft + Vector2.right * (_verticalRaySpace * i + horizontalProjection);
                     bool didHit = Physics2D.Raycast(debugRayOrigin, Vector2.up, debugRayLength, _moveStats.GroundLayer);
                     Color rayColor = didHit ? Color.cyan : Color.red;
 
@@ -337,7 +399,7 @@ public class MovementController : MonoBehaviour
             if (_moveStats.DebugShowIsGrounded)
             {
                 float debugRayLength = _moveStats.ExtraRayDebugDistance;
-                Vector2 debugRayOrigin = RayCastCorners.bottomLeft + Vector2.right * (_verticalRaySpace * i);
+                Vector2 debugRayOrigin = RayCastCorners.bottomLeft + Vector2.right * (_verticalRaySpace * i + velocity.x);
                 bool didHit = Physics2D.Raycast(debugRayOrigin, Vector2.down, debugRayLength, _moveStats.GroundLayer);
                 Color rayColor = didHit ? Color.cyan : Color.red;
                 Debug.DrawRay(debugRayOrigin, Vector2.down * debugRayLength, rayColor);
@@ -377,6 +439,39 @@ public class MovementController : MonoBehaviour
         #endregion
         
         IsHittingBothCorners = hitLeftCorner && hitRightCorner;
+
+        if (IsClimbingSlope)
+        {
+            float directionX = Mathf.Sign(velocity.x);
+            float rayLength = Mathf.Abs(velocity.x) + CollisionPadding;
+            Vector2 rayOrigin = ((directionX == -1 ? RayCastCorners.bottomLeft : RayCastCorners.bottomRight) +
+                                 Vector2.up * velocity.y);
+            RaycastHit2D hit =
+                Physics2D.Raycast(rayOrigin, Vector2.right * directionX, rayLength, _moveStats.GroundLayer);
+
+            if (hit)
+            {
+                float slopeAngle = Mathf.Round(Vector2.Angle(hit.normal, Vector2.up));
+                if (slopeAngle != SlopeAngle)
+                {
+                    velocity.x = (hit.distance - CollisionPadding) * directionX;
+                    SlopeAngle = slopeAngle;
+                    SlopeNormal = hit.normal;
+                }
+            }
+        }
+
+        #region Debug Slope Normal
+
+        if (_moveStats.DebugShowSlopeNormal && (IsClimbingSlope || IsDescendingSlope))
+        {
+            Vector2 drawOrigin = new Vector2(_coll.bounds.center.x, _coll.bounds.min.y);
+            float drawLength = _moveStats.ExtraRayDebugDistance * 3f;
+            
+            Debug.DrawRay(drawOrigin, SlopeNormal * drawLength, Color.yellow);
+        }
+
+        #endregion
     }
             
     
@@ -399,6 +494,123 @@ public class MovementController : MonoBehaviour
         _horizontalRaySpace = bounds.size.y / (NumOfHorizontalRays - 1);
         _verticalRaySpace = bounds.size.x / (NumOfVerticalRays - 1);
     }
+
+    #region Slopes
+
+    private void ClimbSlope(ref Vector2 velocity, float slopeAngle, Vector2 slopeNormal)
+    {
+        float moveDistance = Mathf.Abs(velocity.x);
+        float climbVelocityY = Mathf.Sign(slopeAngle * Mathf.Deg2Rad) * moveDistance;
+
+        if (velocity.y <= climbVelocityY)
+        {
+            velocity.y = climbVelocityY;
+            velocity.x = Mathf.Cos(slopeAngle * Mathf.Deg2Rad) * moveDistance * Mathf.Sign(velocity.x);
+
+            IsCollidingBelow = true;
+            IsClimbingSlope = true;
+            SlopeAngle = slopeAngle;
+            SlopeNormal = slopeNormal;
+        }
+    }
+
+    private void DescendSlope(ref Vector2 velocity)
+    {
+        RaycastHit2D maxSlopeHitLeft = Physics2D.Raycast(RayCastCorners.bottomLeft, Vector2.down,
+            Mathf.Abs(velocity.y) + CollisionPadding, _moveStats.GroundLayer);
+        RaycastHit2D maxSlopeHitRight = Physics2D.Raycast(RayCastCorners.bottomRight, Vector2.down,
+            Mathf.Abs(velocity.y) + CollisionPadding, _moveStats.GroundLayer);
+
+        if (maxSlopeHitLeft ^ maxSlopeHitRight)
+        {
+            SlideDownMaxSlope(maxSlopeHitLeft, ref velocity);
+            SlideDownMaxSlope(maxSlopeHitRight, ref velocity);
+        }
+
+        if (!IsSliding)
+        {
+            float directionX = FaceDirection;
+            
+            Vector2 rayOrigin = (directionX == -1) ? RayCastCorners.bottomRight : RayCastCorners.bottomLeft;
+
+            float maxExpectedVerticalDrop = Mathf.Tan(_moveStats.MaxSlopeAngle * Mathf.Deg2Rad) * Mathf.Abs(velocity.x);
+            float dynamicRayLength = Mathf.Abs(velocity.y) + CollisionPadding + maxExpectedVerticalDrop;
+            float rayLength = Mathf.Max(dynamicRayLength, CollisionPadding * 2f);
+
+            RaycastHit2D hit = Physics2D.Raycast(rayOrigin, Vector2.down, rayLength, _moveStats.GroundLayer);
+
+            if (hit)
+            {
+                float slopeAngle = Mathf.Round(Vector2.Angle(hit.normal, Vector2.up));
+                ApplySlopeStick(ref velocity, slopeAngle, hit);
+            }
+
+            #region Debug Visualization
+
+            if (_moveStats.DebugShowDescendSlopeRay)
+            {
+                bool isSticking = IsDescendingSlope;
+                Color rayColor = Color.blue;
+                
+                if (hit && isSticking) rayColor = Color.green;
+                else if (hit && IsSliding) rayColor = Color.yellow;
+                else if (hit && !isSticking) rayColor = Color.red;
+
+                float debugRayLength =
+                    hit ? hit.distance + _moveStats.ExtraRayDebugDistance : _moveStats.ExtraRayDebugDistance * 5f;
+                Debug.DrawRay(rayOrigin, Vector2.down * debugRayLength, rayColor);
+            }
+
+            #endregion
+        }
+    }
+
+    private void ApplySlopeStick(ref Vector2 moveAmount, float slopeAngle, RaycastHit2D hit)
+    {
+        if (hit.distance - CollisionPadding <= Mathf.Tan(slopeAngle * Mathf.Deg2Rad) * Mathf.Abs(moveAmount.x))
+        {
+            float moveDistance = Mathf.Abs(moveAmount.x);
+            float descendMoveAmountY = Mathf.Sin(slopeAngle * Mathf.Deg2Rad) * moveDistance;
+
+            moveAmount.x = Mathf.Cos(slopeAngle * Mathf.Deg2Rad) * moveDistance * Mathf.Sign(moveAmount.x);
+            moveAmount.y -= descendMoveAmountY;
+
+            IsDescendingSlope = true;
+            IsCollidingBelow = true;
+            SlopeNormal = hit.normal;
+            SlopeAngle = slopeAngle;
+        }
+    }
+
+    private void SlideDownMaxSlope(RaycastHit2D hit, ref Vector2 velocity)
+    {
+        if (hit)
+        {
+            float slopeAngle = Mathf.Round(Vector2.Angle(hit.normal, Vector2.up));
+
+            int wallDirection = (int)Mathf.Sign(hit.normal.x);
+            bool isFacingWall = (wallDirection == -1 && _playerMovement.IsFacingRight) ||
+                                (wallDirection == 1 && !_playerMovement.IsFacingRight);
+            bool isNormalSlideableSlope =
+                slopeAngle > _moveStats.MaxSlopeAngle && slopeAngle < _moveStats.MinAngleForWallSlide;
+            bool isWallSlope = slopeAngle >= _moveStats.MinAngleForWallSlide;
+
+            if (isNormalSlideableSlope || (isWallSlope && !isFacingWall))
+            {
+                float tanAngle = Mathf.Clamp(slopeAngle, 0, 89.9f);
+                
+                velocity.x = Mathf.Sign(hit.normal.x) * (Mathf.Abs(velocity.y) - hit.distance) /
+                             Mathf.Tan(tanAngle * Mathf.Deg2Rad);
+
+                IsSliding = true;
+                IsCollidingBelow = true;
+                SlopeAngle = slopeAngle;
+                SlopeNormal = hit.normal;
+            }
+        }
+    }
+
+    #endregion
 
     #region Helpers Methods
 
