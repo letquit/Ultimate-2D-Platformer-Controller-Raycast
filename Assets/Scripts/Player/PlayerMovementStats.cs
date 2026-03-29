@@ -61,7 +61,7 @@ public class PlayerMovementStats : ScriptableObject
     [Header("Jump Coyote Time")]
     [Range(0f, 1f)] public float JumpCoyoteTime = 0.1f;
 
-    [Header("Wall Slide")]
+    [Header("Wall Slide")] public bool CanWallSlideFacingAwayFormWall = false;
     [Min(0.01f)] public float WallSlideSpeed = 5f;
     [Range(0.25f, 50f)] public float WallSlideDecelerationSpeed = 50f;
     [Range(70f, 90f)] public float MinAngleForWallSlide = 85f;

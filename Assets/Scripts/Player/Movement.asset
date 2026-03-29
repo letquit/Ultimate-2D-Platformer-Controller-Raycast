@@ -28,6 +28,13 @@ MonoBehaviour:
   HeadBumpSlideSpeed: 13
   HeadBumpBoxWidth: 0.3
   HeadBumpBoxHeight: 0.1
+  MaxSlopeAngleForHeadBump: 5
+  DashDirectionMatchesSlopeDirection: 1
+  CanJumpOnMaxSlopes: 0
+  JumpFollowSlopesWhenHeadTouching: 1
+  DashFollowSlopesWhenHeadTouching: 1
+  MaxSlopeAngle: 70
+  SlideSpeed: 30
   JumpHeight: 6.5
   JumpHeightCompensationFactor: 1.054
   TimeTillJumpApex: 0.35
@@ -35,13 +42,17 @@ MonoBehaviour:
   MaxFallSpeed: 26
   NumberOfAirJumpsAllowed: 1
   ResetJumpsOnWallSlide: 1
+  ResetAirJumpsOnMaxSlopeLand: 0
   TimeForUpwardsCancel: 0.027
   ApexThreshold: 0.97
   ApexHangTime: 0.075
   JumpBufferTime: 0.125
   JumpCoyoteTime: 0.1
+  CanWallSlideFacingAwayFormWall: 0
   WallSlideSpeed: 5
   WallSlideDecelerationSpeed: 50
+  MinAngleForWallSlide: 85
+  MaxAngleForWallSlide: 95
   WallJumpDirection: {x: -20, y: 6.5}
   WallJumpPostBufferTime: 0.125
   WallJumpGravityOnReleaseMultiplier: 1
@@ -54,11 +65,14 @@ MonoBehaviour:
   DashBufferTime: 0.125
   DashGravityOnReleaseMultiplier: 1
   DashTimeForUpwardsCancel: 0.027
-  DebugShowIsGrounded: 0
+  DebugShowIsGrounded: 1
   DebugShowHeadRays: 0
-  DebugShowWallHit: 0
   DebugShowHeadBumpBox: 0
-  ExtraRayDebugDistance: 0.25
+  DebugShowWallHit: 0
+  DebugShowSlopeNormal: 0
+  DebugShowDashAngle: 0
+  DebugShowDescendSlopeRay: 0
+  ExtraRayDebugDistance: 1
   ShowWalkJumpArc: 0
   ShowRunJumpArc: 0
   StopOnCollision: 1
