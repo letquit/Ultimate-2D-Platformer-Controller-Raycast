@@ -23,11 +23,9 @@ public struct CollisionState
     public bool IsHittingCeiling;
     public float CeilingAngle;
     public Vector2 CeilingNormal;
-    
-    public int HeadBumpSlideDirection;
-    public bool IsHittingCeilingCenter;
-    public bool IsHittingBothCorners;
 
+    public Vector2 AveragedVisualNormal;
+    
     public void Reset()
     {
         WasGroundedLastFrame = IsGrounded;
@@ -47,13 +45,12 @@ public struct CollisionState
         IsHittingCeiling = false;
         CeilingAngle = 0f;
         CeilingNormal = Vector2.zero;
-
-        HeadBumpSlideDirection = 0;
-        IsHittingCeilingCenter = false;
-        IsHittingBothCorners = false;
+        
+        AveragedVisualNormal = Vector2.up;
     }
 }
 
+[RequireComponent(typeof(PlayerMovement))]
 public class MovementController : MonoBehaviour
 {
     public bool IsSliding => _internalState.IsOnSlope && _internalState.SlopeAngle > _moveStats.MaxSlopeAngle;
@@ -62,6 +59,7 @@ public class MovementController : MonoBehaviour
 
     [Range(2, 100)] public int NumOfHorizontalRays = 4;
     [Range(2, 100)] public int NumOfVerticalRays = 4;
+    public int NumOfVerticalRaysForVisualNormals;
 
     [Header("Sensors")]
     [SerializeField] private float _verticalProbeDistance = 0.1f;
@@ -84,6 +82,9 @@ public class MovementController : MonoBehaviour
     public Vector2 SlopeNormal { get; private set; }
     
     public int FaceDirection { get; private set; }
+
+    private bool _isCornerCorrectingThisFrame;
+    private bool _isHorizontalCornerCorrectingThisFrame;
 
     private PlayerMovement _playerMovement;
     private Rigidbody2D _rb;
@@ -130,9 +131,18 @@ public class MovementController : MonoBehaviour
         HorizontalProbes(moveDelta);
 
         CeilingProbes(moveDelta);
-        CheckCeilingBoxCast(moveDelta);
 
         GroundProbes(moveDelta);
+
+        if (_internalState.IsHittingCeiling && DetectHeadCornerCorrection(moveDelta))
+        {
+            _internalState.IsHittingCeiling = false;
+        }
+
+        if (_moveStats.MatchVisualsToSlope)
+        {
+            DetectSlopeNormalsForVisuals(moveDelta);
+        }
         
         State = _internalState;
 
@@ -152,6 +162,9 @@ public class MovementController : MonoBehaviour
         {
             DescendSlope(ref velocity);
         }
+        
+        ApplyHorizontalCornerCorrection(ref velocity);
+        ApplyHeadCornerCorrection(ref velocity);
 
         ResolveHorizontalMovement(ref velocity);
         ResolveVerticalMovement(ref velocity);
@@ -191,7 +204,7 @@ public class MovementController : MonoBehaviour
             {
                 bool didHit = hit;
                 Color rayColor = didHit ? Color.cyan : Color.red;
-                Debug.DrawRay(rayOrigin, Vector3.down * rayLength, rayColor);
+                Debug.DrawRay(rayOrigin, Vector2.down * rayLength, rayColor);
             }
 
             #endregion
@@ -279,6 +292,7 @@ public class MovementController : MonoBehaviour
                         safetyGroundHit = hitSafety;
                         smallestSafetyDistance = safetyGroundHit.distance;
                         foundSafetyGround = true;
+                        break;
                     }
                 }
 
@@ -343,9 +357,6 @@ public class MovementController : MonoBehaviour
         {
             float rayLength = _verticalProbeDistance + CollisionPadding;
 
-            bool hitLeftCorner = false;
-            bool hitRightCorner = false;
-
             for (int i = 0; i < NumOfVerticalRays; i++)
             {
                 Vector2 rayOrigin = RayCastCorners.topLeft + Vector2.right * (_verticalRaySpace * i);
@@ -392,41 +403,11 @@ public class MovementController : MonoBehaviour
                     }
 
                     _internalState.IsHittingCeiling = true;
-                    
-                    if (i == 0)
-                    {
-                        hitLeftCorner = true;
-                    }
-
-                    if (i == NumOfVerticalRays - 1)
-                    {
-                        hitRightCorner = true;
-                    }
 
                     if (currentCeilingAngle > _internalState.CeilingAngle)
                     {
                         _internalState.CeilingAngle = currentCeilingAngle;
                         _internalState.CeilingNormal = hit.normal;
-                    }
-
-                    if (_moveStats.UseHeadBumpSlide && currentCeilingAngle <= _moveStats.MaxSlopeAngleForHeadBump)
-                    {
-                        int slideDir = 0;
-                        if (i == 0) slideDir = 1;
-                        else if (i == NumOfVerticalRays - 1) slideDir = -1;
-
-                        if (slideDir != 0)
-                        {
-                            Vector2 slideCheckRayOrigin = hit.point + (Vector2.down * CollisionPadding * 2);
-                            float slideCheckRayLength = CollisionPadding * 2;
-                            RaycastHit2D slideCheckHit = Physics2D.Raycast(slideCheckRayOrigin,
-                                Vector2.right * slideDir, slideCheckRayLength, _moveStats.GroundLayer);
-
-                            if (!slideCheckHit)
-                            {
-                                _internalState.HeadBumpSlideDirection = slideDir;
-                            }
-                        }
                     }
                 }
 
@@ -434,24 +415,19 @@ public class MovementController : MonoBehaviour
 
                 if (_moveStats.DebugShowHeadRays)
                 {
-                    float debugRayLength = _moveStats.ExtraRayDebugDistance;
-                    bool didHit = Physics2D.Raycast(rayOrigin, Vector2.up, debugRayLength, _moveStats.GroundLayer);
-                    Color rayColor = didHit ? Color.cyan : Color.red;
+                    float drawLength = hit ? hit.distance : (rayLength + _moveStats.ExtraRayDebugDistance);
+                    
+                    Color rayColor = hit ? Color.cyan : Color.red;
 
                     if (i == 0 || i == NumOfVerticalRays - 1)
                     {
-                        rayColor = didHit ? Color.green : Color.magenta;
+                        rayColor = hit ? Color.green : Color.magenta;
                     }
 
-                    Debug.DrawRay(rayOrigin, Vector2.up * debugRayLength, rayColor);
+                    Debug.DrawRay(rayOrigin, Vector2.up * drawLength, rayColor);
                 }
 
                 #endregion
-            }
-
-            if (hitLeftCorner && hitRightCorner)
-            {
-                _internalState.IsHittingBothCorners = true;
             }
         }
     }
@@ -474,7 +450,7 @@ public class MovementController : MonoBehaviour
 
             if (_moveStats.DebugShowWallHit)
             {
-                Debug.DrawRay(rayOriginLeft, Vector3.left * rayLength, hitLeft ? Color.cyan : Color.red);
+                Debug.DrawRay(rayOriginLeft, Vector2.left * rayLength, hitLeft ? Color.cyan : Color.red);
             }
 
             #endregion
@@ -540,49 +516,8 @@ public class MovementController : MonoBehaviour
         IsDescendingSlope = false;
         SlopeAngle = 0f;
         SlopeNormal = Vector2.zero;
-    }
-
-    private void CheckCeilingBoxCast(Vector2 velocity)
-    {
-        if (velocity.y < 0) return;
-        if (!_moveStats.UseHeadBumpSlide) return;
-
-        float boxCastDistance = Mathf.Abs(velocity.y) + CollisionPadding;
-        Vector2 boxSize =
-            new Vector2(_coll.bounds.center.x * _moveStats.HeadBumpBoxWidth, _moveStats.HeadBumpBoxHeight);
-        Vector2 boxOrigin = new Vector2(_coll.bounds.center.x + velocity.x, _coll.bounds.max.y);
-
-        RaycastHit2D hit =
-            Physics2D.BoxCast(boxOrigin, boxSize, 0f, Vector2.up, boxCastDistance, _moveStats.GroundLayer);
-
-        if (hit)
-        {
-            _internalState.IsHittingCeilingCenter = true;
-        }
-
-        #region Debug Visualization
-
-        if (_moveStats.DebugShowHeadBumpBox)
-        {
-            Vector2 drawCenter = boxOrigin + (Vector2.up * boxCastDistance / 2f);
-            Vector2 drawSize = new Vector2(boxSize.x, boxSize.y + boxCastDistance);
-            Vector2 halfSize = drawSize / 2f;
-            
-            // 4 corners
-            Vector2 topLeft = drawCenter + new Vector2(-halfSize.x, halfSize.y);
-            Vector2 topRight = drawCenter + new Vector2(halfSize.x, halfSize.y);
-            Vector2 bottomRight = drawCenter + new Vector2(halfSize.x, -halfSize.y);
-            Vector2 bottomLeft = drawCenter + new Vector2(-halfSize.x, -halfSize.y);
-            
-            Color color = hit ? Color.green : Color.red;
-            
-            Debug.DrawLine(topLeft, topRight, color);
-            Debug.DrawLine(topRight, bottomRight, color);
-            Debug.DrawLine(bottomRight, bottomLeft, color);
-            Debug.DrawLine(bottomLeft, topLeft, color);
-        }
-
-        #endregion
+        _isCornerCorrectingThisFrame = false;
+        _isHorizontalCornerCorrectingThisFrame = false;
     }
 
     private void ResolveVerticalMovement(ref Vector2 velocity)
@@ -591,6 +526,8 @@ public class MovementController : MonoBehaviour
 
         if (velocity.y > 0f)
         {
+            if (_isCornerCorrectingThisFrame) return;
+            
             float upwardRayLength = Mathf.Abs(velocity.y) + CollisionPadding;
             for (int i = 0; i < NumOfVerticalRays; i++)
             {
@@ -749,6 +686,8 @@ public class MovementController : MonoBehaviour
 
     private void ResolveHorizontalMovement(ref Vector2 velocity)
     {
+        if (_isHorizontalCornerCorrectingThisFrame) return;
+        
         float originalVelocityX = velocity.x;
         
         float directionX = Mathf.Sign(velocity.x);
@@ -876,7 +815,7 @@ public class MovementController : MonoBehaviour
 
         float maxExpectedVerticalDrop = Mathf.Tan(_moveStats.MinAngleForWallSlide * Mathf.Deg2Rad) * Mathf.Abs(velocity.x);
         float dynamicRayLength = Mathf.Abs(velocity.y) + CollisionPadding + maxExpectedVerticalDrop;
-        float rayLength = Mathf.Max(dynamicRayLength, CollisionPadding * 2f);
+        float rayLength = Mathf.Max(dynamicRayLength, Mathf.Abs(velocity.y), CollisionPadding * 2f);
 
         RaycastHit2D hit = Physics2D.Raycast(rayOrigin, Vector2.down, rayLength, _moveStats.GroundLayer);
 
@@ -972,6 +911,307 @@ public class MovementController : MonoBehaviour
 
     #endregion
 
+    #region Corner Correction
+
+    private bool CalculateHeadCornerCorrection(Vector3 velocity, out float correctionAmount)
+    {
+        correctionAmount = 0f;
+
+        if (velocity.y <= 0 || !_moveStats.EnableCornerCorrection) return false;
+        
+        float rayLength = Mathf.Abs(velocity.y) + CollisionPadding;
+        rayLength = Mathf.Max(rayLength, _verticalProbeDistance);
+
+        Vector2 leftOuter = RayCastCorners.topLeft;
+        Vector2 leftInner = leftOuter + (Vector2.right * _moveStats.CornerCorrectionWidth);
+        Vector2 rightOuter = RayCastCorners.topRight;
+        Vector2 rightInner = rightOuter + (Vector2.left * _moveStats.CornerCorrectionWidth);
+
+        bool hitLeftOuter = Physics2D.Raycast(leftOuter, Vector2.up, rayLength, _moveStats.GroundLayer);
+        RaycastHit2D hitLeftInner = Physics2D.Raycast(leftInner, Vector2.up, rayLength, _moveStats.GroundLayer);
+
+        bool hitRightOuter = Physics2D.Raycast(rightOuter, Vector2.up, rayLength, _moveStats.GroundLayer);
+        RaycastHit2D hitRightInner = Physics2D.Raycast(rightInner, Vector2.up, rayLength, _moveStats.GroundLayer);
+
+        #region Debug Visualization
+
+        if (_moveStats.DebugShowCornerCorrectionRays)
+        {
+            Debug.DrawRay(leftOuter, Vector2.up * rayLength, hitLeftOuter ? Color.red : Color.green);
+            Debug.DrawRay(rightOuter, Vector2.up * rayLength, hitRightOuter ? Color.red : Color.green);
+            Debug.DrawRay(leftInner, Vector2.up * rayLength, hitLeftInner ? Color.red : Color.green);
+            Debug.DrawRay(rightInner, Vector2.up * rayLength, hitRightInner ? Color.red : Color.green);
+        }
+
+        #endregion
+
+        bool leftInnerClear = !hitLeftInner || (hitLeftOuter && hitLeftInner.distance < _verticalProbeDistance);
+        bool rightInnerClear = !hitRightInner || (hitRightOuter && hitRightInner.distance < _verticalProbeDistance);
+
+        bool canCorrectLeft = hitLeftOuter && leftInnerClear;
+        bool canCorrectRight= hitRightOuter && rightInnerClear;
+
+        if (canCorrectLeft && canCorrectRight)
+        {
+            return false;
+        }
+
+        if (canCorrectLeft)
+        {
+            float pushAmount = _moveStats.CornerCorrectionWidth + CollisionPadding;
+            bool blockedRight =
+                Physics2D.Raycast(RayCastCorners.topRight, Vector2.right, pushAmount, _moveStats.GroundLayer);
+            
+            if (_moveStats.DebugShowCornerCorrectionRays) 
+                Debug.DrawRay(RayCastCorners.topRight, Vector2.right * pushAmount, blockedRight ? Color.red : Color.cyan);
+
+            if (!blockedRight)
+            {
+                correctionAmount = pushAmount;
+                return true;
+            }
+        }
+        
+        else if (canCorrectRight)
+        {
+            float pushAmount = _moveStats.CornerCorrectionWidth + CollisionPadding;
+            bool blockedLeft =
+                Physics2D.Raycast(RayCastCorners.topLeft, Vector2.left, pushAmount, _moveStats.GroundLayer);
+            
+            if (_moveStats.DebugShowCornerCorrectionRays) 
+                Debug.DrawRay(RayCastCorners.topLeft, Vector2.left * pushAmount, blockedLeft ? Color.red : Color.cyan);
+            
+            if (!blockedLeft)
+            {
+                correctionAmount = -pushAmount;
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+    private bool DetectHeadCornerCorrection(Vector2 velocity)
+    {
+        return CalculateHeadCornerCorrection(velocity, out _);
+    }
+
+    private void ApplyHeadCornerCorrection(ref Vector2 velocity)
+    {
+        if (CalculateHeadCornerCorrection(velocity, out float amount))
+        {
+            velocity.x += amount;
+            _isCornerCorrectingThisFrame = true;
+        }
+    }
+
+    private bool CalculateHorizontalCornerCorrection(Vector2 velocity, out float correctionAmount)
+    {
+        // feet
+        correctionAmount = 0f;
+        
+        if (!_playerMovement.IsDashing || IsClimbingSlope) return false;
+
+        float directionX = Mathf.Sign(velocity.x);
+        float rayLength = Mathf.Abs(velocity.x) + CollisionPadding;
+        if (Mathf.Abs(velocity.x) < CollisionPadding) rayLength = CollisionPadding * 2;
+        
+        Vector2 footOrigin = (directionX == -1) ? RayCastCorners.bottomLeft : RayCastCorners.bottomRight;
+        Vector2 headOrigin = (directionX == -1) ? RayCastCorners.topLeft : RayCastCorners.topRight;
+
+        bool validlift = false;
+        float potentialLiftAmount = 0f;
+
+        RaycastHit2D footHit = Physics2D.Raycast(footOrigin, Vector2.right * directionX, rayLength, _moveStats.GroundLayer);
+        
+        if (_moveStats.DebugShowCornerCorrectionRays) 
+            Debug.DrawRay(footOrigin, Vector2.right * directionX * rayLength, footHit ? Color.red : Color.green);
+
+        if (footHit)
+        {
+            float hitAngle = Mathf.Round(Vector2.Angle(footHit.normal, Vector2.up));
+            if (hitAngle <= _moveStats.MaxSlopeAngle)
+            {
+                return false;
+            }
+            
+            float clearanceHeight = _moveStats.HorizontalCornerCorrectionHeight;
+            Vector2 highProbeOrigin = footOrigin + Vector2.up * clearanceHeight;
+            float checkDist = footHit.distance + CollisionPadding;
+
+            bool highHit = Physics2D.Raycast(highProbeOrigin, Vector2.right * directionX * checkDist,
+                _moveStats.GroundLayer);
+            
+            if (_moveStats.DebugShowCornerCorrectionRays)
+                Debug.DrawRay(highProbeOrigin, Vector2.right * directionX * checkDist, highHit ? Color.red : Color.green);
+            
+            if (!highHit)
+            {
+                Vector2 downRayOrigin = footHit.point + (Vector2.right * directionX * CollisionPadding) +
+                                        (Vector2.up * clearanceHeight);
+                RaycastHit2D surfaceHit = Physics2D.Raycast(downRayOrigin, Vector2.down,
+                    clearanceHeight + CollisionPadding, _moveStats.GroundLayer);
+                
+                if (_moveStats.DebugShowCornerCorrectionRays)
+                    Debug.DrawRay(downRayOrigin, Vector2.down * (clearanceHeight + CollisionPadding), Color.cyan);
+
+                if (surfaceHit)
+                {
+                    float lift = (surfaceHit.point.y + CollisionPadding) - footOrigin.y;
+                    if (lift > 0 && lift <= clearanceHeight + CollisionPadding)
+                    {
+                        Vector2 targetHeadPos = headOrigin + (Vector2.right * directionX * CollisionPadding) +
+                                                (Vector2.up * lift);
+                        bool ceilingBlocked = Physics2D.Raycast(targetHeadPos, Vector2.up, CollisionPadding,
+                            _moveStats.GroundLayer);
+
+                        if (!ceilingBlocked)
+                        {
+                            potentialLiftAmount = lift;
+                            validlift = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // head
+        bool validPush = false;
+        float potentialPushAmount = 0f;
+
+        RaycastHit2D headHit =
+            Physics2D.Raycast(headOrigin, Vector2.right * directionX, rayLength, _moveStats.GroundLayer);
+        
+        if (_moveStats.DebugShowCornerCorrectionRays)
+            Debug.DrawRay(headOrigin, Vector2.right * directionX * rayLength, headHit ? Color.red : Color.green);
+
+        if (headHit)
+        {
+            float clearanceHeight = _moveStats.HorizontalCornerCorrectionHeight;
+            Vector2 lowProbeOrigin = headOrigin - Vector2.up * clearanceHeight;
+            float checkDist = headHit.distance + CollisionPadding;
+
+            bool lowHit = Physics2D.Raycast(lowProbeOrigin, Vector2.right * directionX, checkDist,
+                _moveStats.GroundLayer);
+            
+            if (_moveStats.DebugShowCornerCorrectionRays)
+                Debug.DrawRay(lowProbeOrigin, Vector2.right * directionX * checkDist, lowHit ? Color.red : Color.green);
+
+            if (!lowHit)
+            {
+                Vector2 upRayOrigin = headHit.point + (Vector2.right * directionX * CollisionPadding) - (Vector2.up * clearanceHeight);
+                RaycastHit2D ceilingHit = Physics2D.Raycast(upRayOrigin, Vector2.up, clearanceHeight + CollisionPadding,
+                    _moveStats.GroundLayer);
+                
+                if (_moveStats.DebugShowCornerCorrectionRays)
+                    Debug.DrawRay(upRayOrigin, Vector2.up * (clearanceHeight + CollisionPadding), Color.cyan);
+
+                if (ceilingHit)
+                {
+                    float push = (ceilingHit.point.y - CollisionPadding) - headOrigin.y;
+                    if (push < 0 && Mathf.Abs(push) <= clearanceHeight + CollisionPadding)
+                    {
+                        Vector2 targetFootPos = footOrigin + (Vector2.right * directionX * CollisionPadding) + (Vector2.up * push);
+                        bool floorBlocked = Physics2D.Raycast(targetFootPos, Vector2.down, CollisionPadding,
+                            _moveStats.GroundLayer);
+
+                        if (!floorBlocked)
+                        {
+                            potentialPushAmount = push;
+                            validPush = true;
+                        }
+                    }
+                }
+                    
+            }
+        }
+
+        if (validlift && validPush)
+        {
+            return false;
+        }
+
+        if (validlift)
+        {
+            correctionAmount = potentialLiftAmount;
+            return true;
+        }
+
+        if (validPush)
+        {
+            correctionAmount = potentialPushAmount;
+            return true;
+        }
+        
+        return false;
+    }
+
+    private void ApplyHorizontalCornerCorrection(ref Vector2 velocity)
+    {
+        if (CalculateHorizontalCornerCorrection(velocity, out float liftAmount))
+        {
+            velocity.y = liftAmount;
+            _isHorizontalCornerCorrectingThisFrame = true;
+        }
+    }
+
+    #endregion
+
+    #region Visuals
+    private void DetectSlopeNormalsForVisuals(Vector2 velocity)
+    {
+        if (_internalState.IsGrounded)
+        {
+            float downwardRayLength = _moveStats.SlopeAverageNormalsRayLength;
+            
+            Vector2 compositeNormal = Vector2.zero;
+            int hitCount = 0;
+
+            float visualWidth = _moveStats.VisualRaycastWidth;
+            float startX = _coll.bounds.center.x - (visualWidth / 2);
+            float bottomY = _coll.bounds.min.y;
+
+            float visualRaySpace = 0;
+            if (NumOfVerticalRaysForVisualNormals > 1)
+            {
+                visualRaySpace = visualWidth / (NumOfVerticalRaysForVisualNormals -1);
+            }
+
+            for (int i = 0; i < NumOfVerticalRaysForVisualNormals; i++)
+            {
+                float xPos = startX + (visualRaySpace * i);
+                Vector2 rayOrigin = new Vector2(xPos, bottomY) + (Vector2.right * velocity.x);
+
+                RaycastHit2D hit =
+                    Physics2D.Raycast(rayOrigin, Vector2.down, downwardRayLength, _moveStats.GroundLayer);
+
+                if (hit)
+                {
+                    compositeNormal += hit.normal;
+                    hitCount++;
+                }
+            }
+
+            if (hitCount > 0)
+            {
+                compositeNormal /= hitCount;
+                compositeNormal.Normalize();
+                _internalState.AveragedVisualNormal = compositeNormal;
+            }
+            else
+            {
+                _internalState.AveragedVisualNormal = Vector2.up;
+            }
+        }
+        else
+        {
+            _internalState.AveragedVisualNormal = Vector2.Lerp(_internalState.AveragedVisualNormal, Vector2.up,
+                _moveStats.SlopeRotationSpeed * Time.fixedDeltaTime);
+        }
+    }
+
+    #endregion
+    
     #region Helpers Methods
 
     public bool IsGrounded() => _internalState.IsGrounded;
@@ -1019,7 +1259,7 @@ public class MovementControllerEditor : Editor
             EditorGUILayout.Toggle("Is Hitting Ceiling", controller.State.IsHittingCeiling);
             EditorGUILayout.FloatField("Ceiling Angle", controller.State.CeilingAngle);
             EditorGUILayout.Vector2Field("Ceiling Normal", controller.State.CeilingNormal);
-            EditorGUILayout.IntField("Head Bump Slide Direction", controller.State.HeadBumpSlideDirection);
+            EditorGUILayout.Vector2Field("Averaged Visual Normals:", controller.State.AveragedVisualNormal);
 
             EditorGUILayout.Space();
             EditorGUILayout.Toggle("Is Sliding", controller.IsSliding);

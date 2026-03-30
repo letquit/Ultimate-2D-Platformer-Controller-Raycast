@@ -771,6 +771,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::MovementController
   NumOfHorizontalRays: 4
   NumOfVerticalRays: 4
+  NumOfVerticalRaysForVisualNormals: 7
   _verticalProbeDistance: 0.1
   _horizontalProbeDistance: 0.1
   _safetyGraceDuration: 0.08
