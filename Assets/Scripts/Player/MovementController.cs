@@ -56,6 +56,7 @@ public class MovementController : MonoBehaviour
     public bool IsSliding => _internalState.IsOnSlope && _internalState.SlopeAngle > _moveStats.MaxSlopeAngle;
     
     public const float CollisionPadding = 0.015f;
+    private const float AIRBORNE_ANGLE_MEMORY = -999f;
 
     [Range(2, 100)] public int NumOfHorizontalRays = 4;
     [Range(2, 100)] public int NumOfVerticalRays = 4;
@@ -80,11 +81,16 @@ public class MovementController : MonoBehaviour
     public bool IsDescendingSlope { get; private set; }
     public float SlopeAngle { get; private set; }
     public Vector2 SlopeNormal { get; private set; }
-    
+    public float LastLandingTime { get; set; }
     public int FaceDirection { get; private set; }
 
     private bool _isCornerCorrectingThisFrame;
     private bool _isHorizontalCornerCorrectingThisFrame;
+
+    private float _rearCornerSlopeAngle;
+    private float _slopeCurveAccumulator;
+
+    private bool _forceAirBorneNextFrame;
 
     private PlayerMovement _playerMovement;
     private Rigidbody2D _rb;
@@ -94,6 +100,8 @@ public class MovementController : MonoBehaviour
 
     private float _lastSafetyGroundFixedTime = -Mathf.Infinity;
     private RaycastHit2D _lastSafetyGroundHit;
+
+    private Collider2D[] _overlapBuffer = new Collider2D[1];
     
     public struct RaycastCorners
     {
@@ -132,7 +140,15 @@ public class MovementController : MonoBehaviour
 
         CeilingProbes(moveDelta);
 
-        GroundProbes(moveDelta);
+        if (_forceAirBorneNextFrame)
+        {
+            _internalState.IsGrounded = false;
+            _forceAirBorneNextFrame = false;
+        }
+        else
+        {
+            GroundProbes(moveDelta);
+        }
 
         if (_internalState.IsHittingCeiling && DetectHeadCornerCorrection(moveDelta))
         {
@@ -640,6 +656,19 @@ public class MovementController : MonoBehaviour
 
         if (foundGround)
         {
+            float calculation = (groundHit.distance - CollisionPadding) * -1;
+            if (calculation > 0 && calculation <= CollisionPadding + 0.001f)
+            {
+                
+            }
+            else
+            {
+                if (Mathf.Abs(calculation) <= 0.001f)
+                {
+                    calculation = 0f;
+                }
+            }
+            
             if (velocity.y <= 0)
             {
                 float distanceToFloor = groundHit.distance - CollisionPadding;
@@ -650,13 +679,11 @@ public class MovementController : MonoBehaviour
                     velocity.x += pushOutX * Mathf.Sign(_internalState.SlopeNormal.x);
                 }
                 
-                float calculation = (groundHit.distance - CollisionPadding) * -1;
-                if (calculation > 0 && calculation <= CollisionPadding + 0.001f)
-                {
-                    calculation = 0f;
-                }
-                
                 velocity.y = calculation;
+            }
+            else if (IsClimbingSlope)
+            {
+                velocity.y += calculation;
             }
         }
         
@@ -710,13 +737,53 @@ public class MovementController : MonoBehaviour
 
             if (hit)
             {
+                // priority 1 - climb slopes
                 float slopeAngle = Mathf.Round(Vector2.Angle(hit.normal, Vector2.up));
+                bool isLowerBodyHit = i <= (NumOfHorizontalRays / 2);
+                if (isLowerBodyHit && _playerMovement.IsWalkableSlope(slopeAngle) && slopeAngle > 0f)
+                {
+                    ClimbSlope(ref velocity, slopeAngle, hit.normal, originalVelocityX);
+                    continue;
+                }
+
+                if (IsClimbingSlope && slopeAngle <= _moveStats.MaxSlopeAngle)
+                {
+                    continue;
+                }
+                
+                // priority 2 - step up
+                if (i == 0 && hit.distance > 0.001f && _internalState.IsGrounded)
+                {
+                    if (AttemptStepUp(hit, ref velocity, directionX, originalVelocityX))
+                    {
+                        break;
+                    }
+                }
+                
+                // priority 3 - shin guard
+                if (i == 0)
+                {
+                    Vector2 shinOrigin = rayOrigin + (Vector2.up * _horizontalRaySpace);
+                    RaycastHit2D shinHit = Physics2D.Raycast(shinOrigin, Vector2.right * directionX, rayLength,
+                        _moveStats.GroundLayer);
+
+                    if (shinHit)
+                    {
+                        float shinAngle = Mathf.Round(Vector2.Angle(shinHit.normal, Vector2.up));
+                        if (shinAngle <= _moveStats.MaxSlopeAngle)
+                        {
+                            ClimbSlope(ref velocity, shinAngle, shinHit.normal, originalVelocityX);
+                            continue;
+                        }
+                    }
+                }
+                
+                // rest
                 bool isSlideableSlope = slopeAngle > _moveStats.MaxSlopeAngle && slopeAngle < _moveStats.MinAngleForWallSlide;
 
                 if (isSlideableSlope)
                 {
                     velocity.x = (hit.distance - CollisionPadding) * directionX;
-                    rayLength = hit.distance;
 
                     if (IsClimbingSlope)
                     {
@@ -733,18 +800,6 @@ public class MovementController : MonoBehaviour
                     {
                         continue;
                     }
-                }
-
-                bool isLowerBodyHit = i <= (NumOfHorizontalRays / 2);
-                if (isLowerBodyHit && _playerMovement.IsWalkableSlope(slopeAngle) && slopeAngle > 0f)
-                {
-                    ClimbSlope(ref velocity, slopeAngle, hit.normal, originalVelocityX);
-                    continue;
-                }
-
-                if (IsClimbingSlope && slopeAngle <= _moveStats.MaxSlopeAngle)
-                {
-                    continue;
                 }
                 
                 velocity.x = (hit.distance - CollisionPadding) * directionX;
@@ -793,22 +848,23 @@ public class MovementController : MonoBehaviour
             IsClimbingSlope = true;
             SlopeAngle = slopeAngle;
             SlopeNormal = slopeNormal;
+            _rearCornerSlopeAngle = slopeAngle;
+        }
+        else
+        {
+            float dot = Vector2.Dot(velocity.normalized, slopeNormal);
+            if (Mathf.Abs(dot) < 0.05f && _playerMovement.IsDashing)
+            {
+                IsClimbingSlope = true;
+                SlopeAngle = slopeAngle;
+                SlopeNormal = slopeNormal;
+                _rearCornerSlopeAngle = slopeAngle;
+            }
         }
     }
 
     private void DescendSlope(ref Vector2 velocity)
     {
-        RaycastHit2D maxSlopeHitLeft = Physics2D.Raycast(RayCastCorners.bottomLeft, Vector2.down,
-            Mathf.Abs(velocity.y) + CollisionPadding, _moveStats.GroundLayer);
-        RaycastHit2D maxSlopeHitRight = Physics2D.Raycast(RayCastCorners.bottomRight, Vector2.down,
-            Mathf.Abs(velocity.y) + CollisionPadding, _moveStats.GroundLayer);
-
-        if (maxSlopeHitLeft ^ maxSlopeHitRight)
-        {
-            SlideDownMaxSlope(maxSlopeHitLeft, ref velocity);
-            SlideDownMaxSlope(maxSlopeHitRight, ref velocity);
-        }
-
         float directionX = FaceDirection;
         
         Vector2 rayOrigin = (directionX == -1) ? RayCastCorners.bottomRight : RayCastCorners.bottomLeft;
@@ -819,19 +875,7 @@ public class MovementController : MonoBehaviour
 
         RaycastHit2D hit = Physics2D.Raycast(rayOrigin, Vector2.down, rayLength, _moveStats.GroundLayer);
 
-        if (hit)
-        {
-            float slopeAngle = Mathf.Round(Vector2.Angle(hit.normal, Vector2.up));
-
-            if (slopeAngle >= _moveStats.MinAngleForWallSlide)
-            {
-                return;
-            }
-            
-            ApplySlopeStick(ref velocity, slopeAngle, hit);
-        }
-
-        #region Debug Visualization
+        #region Debug
 
         if (_moveStats.DebugShowDescendSlopeRay)
         {
@@ -848,7 +892,181 @@ public class MovementController : MonoBehaviour
         }
 
         #endregion
-        
+
+        if (hit)
+        {
+            float slopeAngle = Mathf.Round(Vector2.Angle(hit.normal, Vector2.up));
+            float horizSpeed = Mathf.Abs(velocity.x) / Time.fixedDeltaTime;
+
+            bool inLandingGrace = (Time.time - LastLandingTime) < _moveStats.LandingGraceTime;
+            bool wasAirborne = _rearCornerSlopeAngle == AIRBORNE_ANGLE_MEMORY;
+            float angleDelta = wasAirborne ? 0f : slopeAngle - _rearCornerSlopeAngle;
+
+            int wallDirection = (int)Mathf.Sign(hit.normal.x);
+            bool isFacingWall = (wallDirection == -1 && _playerMovement.IsFacingRight) ||
+                                (wallDirection == 1 && !_playerMovement.IsFacingRight);
+
+            bool isNormalSlideableSlope = _playerMovement.IsSlideableSlope(slopeAngle);
+            bool isWallSlope = slopeAngle >= _moveStats.MinAngleForWallSlide;
+            bool shouldSlide = isNormalSlideableSlope || (isWallSlope && !isFacingWall);
+
+            if (!wasAirborne && slopeAngle > _rearCornerSlopeAngle)
+            {
+                _slopeCurveAccumulator += (slopeAngle - _rearCornerSlopeAngle);
+            }
+            else
+            {
+                _slopeCurveAccumulator -= _moveStats.SlopeCurveDecayRate * Time.fixedDeltaTime;
+            }
+
+            _slopeCurveAccumulator = Mathf.Clamp(_slopeCurveAccumulator, 0f, 180f);
+            
+            // landing check
+            if (inLandingGrace && wasAirborne)
+            {
+                if (shouldSlide)
+                {
+                    SlideDownMaxSlope(hit, ref velocity);
+                    _rearCornerSlopeAngle = slopeAngle;
+                    return;
+                }
+                else if (slopeAngle <= _moveStats.MaxSlopeAngle)
+                {
+                    ApplySlopeStick(ref velocity, slopeAngle, hit);
+                    _rearCornerSlopeAngle = slopeAngle;
+                }
+                else
+                {
+                    _rearCornerSlopeAngle = slopeAngle;
+                }
+            }
+            
+            // dramatic angle change
+            else if (!wasAirborne && angleDelta >= _moveStats.MaxAngleDeltaForRunOff)
+            {
+                _rearCornerSlopeAngle = AIRBORNE_ANGLE_MEMORY;
+                _forceAirBorneNextFrame = true;
+            }
+            
+            // speed check
+            else if (!wasAirborne && (angleDelta >= _moveStats.MinAngleDeltaForRunOff ||
+                                      _slopeCurveAccumulator > _moveStats.MaxSlopeCurveAccumulation))
+            {
+                if (horizSpeed >= _moveStats.SpeedForRunOff)
+                {
+                    _rearCornerSlopeAngle = AIRBORNE_ANGLE_MEMORY;
+                    _forceAirBorneNextFrame = true;
+                    _slopeCurveAccumulator = 0f;
+                }
+                else
+                {
+                    if (shouldSlide)
+                    {
+                        SlideDownMaxSlope(hit, ref velocity);
+                        _rearCornerSlopeAngle = slopeAngle;
+                        return;
+                    }
+                    else if (slopeAngle <= _moveStats.MaxSlopeAngle)
+                    {
+                        ApplySlopeStick(ref velocity, slopeAngle, hit);
+                        _rearCornerSlopeAngle = slopeAngle;
+                    }
+                    else
+                    {
+                        _rearCornerSlopeAngle = slopeAngle;
+                    }
+                }
+            }
+            
+            // airborne runOff
+            else if (wasAirborne && !inLandingGrace)
+            {
+                float checkDirection = (Mathf.Abs(velocity.x) < 0.01f) ? FaceDirection : Mathf.Sign(velocity.x);
+                bool isMovingDownSlope = Mathf.Sign(hit.normal.x) == checkDirection;
+
+                if (shouldSlide && isMovingDownSlope)
+                {
+                    SlideDownMaxSlope(hit, ref velocity);
+                    _rearCornerSlopeAngle = slopeAngle;
+                    return;
+                }
+                else if (slopeAngle <= _moveStats.MaxSlopeAngle)
+                {
+                    _rearCornerSlopeAngle = slopeAngle;
+                }
+                else
+                {
+                    _rearCornerSlopeAngle = AIRBORNE_ANGLE_MEMORY;
+                }
+            }
+            
+            // steep slope
+            else if (slopeAngle > _moveStats.MaxSlopeAngle)
+            {
+                float checkDirection = (Mathf.Abs(velocity.x) < 0.01f) ? FaceDirection : Mathf.Sign(velocity.x);
+                bool isMovingDownSlope = Mathf.Sign(hit.normal.x) == checkDirection;
+
+                if (!isMovingDownSlope)
+                {
+                    _rearCornerSlopeAngle = slopeAngle;
+                }
+                else if (slopeAngle < _moveStats.MinAngleForWallSlide)
+                {
+                    SlideDownMaxSlope(hit, ref velocity);
+                    _rearCornerSlopeAngle = slopeAngle;
+                    return;
+                }
+                else
+                {
+                    _rearCornerSlopeAngle = slopeAngle;
+                }
+            }
+
+            // standard walkable slope
+            else
+            {
+                ApplySlopeStick(ref velocity, slopeAngle, hit);
+                _rearCornerSlopeAngle = slopeAngle;
+            }
+        }
+        else
+        {
+            _rearCornerSlopeAngle = AIRBORNE_ANGLE_MEMORY;
+        }
+
+        bool isStable = false;
+        float guardRayLength = Mathf.Max(Mathf.Abs(velocity.y) + CollisionPadding, _verticalProbeDistance);
+
+        for (int i = 0; i < NumOfVerticalRays; i++)
+        {
+            Vector2 guardOrigin = RayCastCorners.bottomLeft + Vector2.right * (_verticalRaySpace * i);
+            RaycastHit2D guardHit =
+                Physics2D.Raycast(guardOrigin, Vector2.down, guardRayLength, _moveStats.GroundLayer);
+
+            if (guardHit)
+            {
+                float guardAngle = (Mathf.Round(Vector2.Angle(guardHit.normal, Vector2.up)));
+                if (guardAngle <= _moveStats.MaxSlopeAngle)
+                {
+                    isStable = true;
+                    break;
+                }
+            }
+        }
+
+        if (!isStable)
+        {
+            RaycastHit2D maxSlopeHitLeft = Physics2D.Raycast(RayCastCorners.bottomLeft, Vector2.down,
+                Mathf.Abs(velocity.y) + CollisionPadding, _moveStats.GroundLayer);
+            RaycastHit2D maxSlopeHitRight = Physics2D.Raycast(RayCastCorners.bottomRight, Vector2.down,
+                Mathf.Abs(velocity.y) + CollisionPadding, _moveStats.GroundLayer);
+
+            if (maxSlopeHitLeft ^ maxSlopeHitRight)
+            {
+                SlideDownMaxSlope(maxSlopeHitLeft, ref velocity);
+                SlideDownMaxSlope(maxSlopeHitRight, ref velocity);
+            }
+        }
     }
 
     private void ApplySlopeStick(ref Vector2 moveAmount, float slopeAngle, RaycastHit2D hit)
@@ -867,8 +1085,11 @@ public class MovementController : MonoBehaviour
                 SlideDownMaxSlope(hit, ref moveAmount);
             }
         }
+
+        float tanDist = Mathf.Tan(slopeAngle * Mathf.Deg2Rad) * Mathf.Abs(moveAmount.x);
+        float hitDistCheck = hit.distance - CollisionPadding;
         
-        if (hit.distance - CollisionPadding <= Mathf.Tan(slopeAngle * Mathf.Deg2Rad) * Mathf.Abs(moveAmount.x))
+        if (hitDistCheck <= tanDist && slopeAngle > 0.001f)
         {
             float moveDistance = Mathf.Abs(moveAmount.x);
             float descendMoveAmountY = Mathf.Sin(slopeAngle * Mathf.Deg2Rad) * moveDistance;
@@ -911,6 +1132,97 @@ public class MovementController : MonoBehaviour
 
     #endregion
 
+    #region Step Up
+
+    private bool GetStepInfo(float hitDistance, float directionX, out float stepHeight)
+    {
+        stepHeight = 0f;
+
+        Vector2 stepProbeUpperOrigin = (directionX == -1) ? RayCastCorners.bottomLeft : RayCastCorners.bottomRight;
+        stepProbeUpperOrigin.y += _moveStats.StepMaxHeight;
+        float checkDist = hitDistance + _moveStats.StepDetectionRayWidth;
+
+        RaycastHit2D stepHitUpper = Physics2D.Raycast(stepProbeUpperOrigin, Vector2.right * directionX, checkDist,
+            _moveStats.GroundLayer);
+        if (stepHitUpper) return false;
+
+        Vector2 stepProbeLowerOrigin = stepProbeUpperOrigin;
+        stepProbeLowerOrigin.x += directionX * checkDist;
+
+        RaycastHit2D surfaceHit = Physics2D.Raycast(stepProbeLowerOrigin, Vector2.down,
+            _moveStats.StepMaxHeight + CollisionPadding, _moveStats.GroundLayer);
+        if (!surfaceHit) return false;
+
+        float surfaceAngle = Mathf.Round(Vector2.Angle(surfaceHit.normal, Vector2.up));
+        if (!_playerMovement.IsWalkableSlope(surfaceAngle)) return false;
+
+        float characterHeight = _coll.bounds.size.y;
+        Vector2 finalHeadroomStart = surfaceHit.point + (Vector2.up * CollisionPadding);
+        RaycastHit2D finalHeadroomHit = Physics2D.Raycast(finalHeadroomStart, Vector2.up,
+            characterHeight - CollisionPadding, _moveStats.GroundLayer);
+        if (finalHeadroomHit) return false;
+
+        Vector2 currentHeadPos = (directionX == -1) ? RayCastCorners.topLeft : RayCastCorners.topRight;
+        Vector2 targetHeadPos = finalHeadroomStart + (Vector2.up * (characterHeight - CollisionPadding));
+
+        Vector2 diagonalDir = targetHeadPos - currentHeadPos;
+        float diagonalDist = diagonalDir.magnitude;
+
+        RaycastHit2D diagonalHit =
+            Physics2D.Raycast(currentHeadPos, diagonalDir.normalized, diagonalDist, _moveStats.GroundLayer);
+        if (diagonalHit) return false;
+
+        float currentFeetY = (directionX == -1) ? RayCastCorners.bottomLeft.y : RayCastCorners.bottomRight.y;
+        stepHeight = surfaceHit.point.y - currentFeetY;
+
+        return true;
+    }
+
+    private bool AttemptStepUp(RaycastHit2D hit, ref Vector2 velocity, float directionX, float originalVelocityX)
+    {
+        if (GetStepInfo(hit.distance, directionX, out float stepHeight))
+        {
+            float minStepUpX = (hit.distance + _moveStats.StepDetectionRayWidth) * directionX;
+            float targetX = minStepUpX;
+
+            if (Mathf.Abs(originalVelocityX) > Mathf.Abs(minStepUpX))
+            {
+                targetX = originalVelocityX;
+            }
+
+            bool isSmallBump = stepHeight <= _moveStats.VaultMinHeight;
+            bool isMovingFast = _playerMovement.IsRunning || _playerMovement.IsDashing;
+            bool canVault = !_moveStats.OnlyVaultWhenRunning || isMovingFast;
+
+            if (isSmallBump || canVault)
+            {
+                velocity.y = stepHeight + 0.001f;
+                velocity.x = targetX;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public bool IsStep(Vector2 currentVelocity)
+    {
+        float directionX = Mathf.Sign(currentVelocity.x);
+        if (Mathf.Abs(currentVelocity.x) < 0.001f) directionX = FaceDirection;
+
+        float lookAhead = Mathf.Abs(currentVelocity.x) * Time.fixedDeltaTime + CollisionPadding;
+        Vector2 rayOrigin = (directionX == -1) ? RayCastCorners.bottomLeft : RayCastCorners.bottomRight;
+
+        RaycastHit2D hit = Physics2D.Raycast(rayOrigin, Vector2.right * directionX, lookAhead, _moveStats.GroundLayer);
+
+        if (!hit)
+            return false;
+
+        return GetStepInfo(hit.distance, directionX, out _);
+    }
+
+    #endregion
+    
     #region Corner Correction
 
     private bool CalculateHeadCornerCorrection(Vector3 velocity, out float correctionAmount)
@@ -923,72 +1235,83 @@ public class MovementController : MonoBehaviour
         rayLength = Mathf.Max(rayLength, _verticalProbeDistance);
 
         Vector2 leftOuter = RayCastCorners.topLeft;
-        Vector2 leftInner = leftOuter + (Vector2.right * _moveStats.CornerCorrectionWidth);
         Vector2 rightOuter = RayCastCorners.topRight;
-        Vector2 rightInner = rightOuter + (Vector2.left * _moveStats.CornerCorrectionWidth);
 
-        bool hitLeftOuter = Physics2D.Raycast(leftOuter, Vector2.up, rayLength, _moveStats.GroundLayer);
-        RaycastHit2D hitLeftInner = Physics2D.Raycast(leftInner, Vector2.up, rayLength, _moveStats.GroundLayer);
+        RaycastHit2D hitLeftOuter = Physics2D.Raycast(leftOuter, Vector2.up, rayLength, _moveStats.GroundLayer);
+        RaycastHit2D hitRightOuter = Physics2D.Raycast(rightOuter, Vector2.up, rayLength, _moveStats.GroundLayer);
 
-        bool hitRightOuter = Physics2D.Raycast(rightOuter, Vector2.up, rayLength, _moveStats.GroundLayer);
-        RaycastHit2D hitRightInner = Physics2D.Raycast(rightInner, Vector2.up, rayLength, _moveStats.GroundLayer);
+        bool leftBlocked = hitLeftOuter;
+        bool rightBlocked = hitRightOuter;
+        
+        if (leftBlocked && rightBlocked) return false;
+        if (!leftBlocked && !rightBlocked) return false;
 
-        #region Debug Visualization
+        float nudgeDir = leftBlocked ? 1f : -1f;
+        float pushAmount = _moveStats.CornerCorrectionWidth + CollisionPadding;
 
-        if (_moveStats.DebugShowCornerCorrectionRays)
+        RaycastHit2D blockingHit = leftBlocked ? hitLeftOuter : hitRightOuter;
+        float currentHitDist = blockingHit.distance;
+        Vector2 normal = blockingHit.normal;
+
+        float deltaX = pushAmount * nudgeDir;
+
+        float projectedRise = 0f;
+        if (Mathf.Abs(normal.y) > 0.001f)
         {
-            Debug.DrawRay(leftOuter, Vector2.up * rayLength, hitLeftOuter ? Color.red : Color.green);
-            Debug.DrawRay(rightOuter, Vector2.up * rayLength, hitRightOuter ? Color.red : Color.green);
-            Debug.DrawRay(leftInner, Vector2.up * rayLength, hitLeftInner ? Color.red : Color.green);
-            Debug.DrawRay(rightInner, Vector2.up * rayLength, hitRightInner ? Color.red : Color.green);
+            projectedRise = -deltaX * (normal.x / normal.y);
         }
 
-        #endregion
+        float safeyBuffer = 0.3f;
+        float testHeight = currentHitDist + projectedRise + safeyBuffer;
+        
+        Vector2 potentialNudge = Vector2.right * deltaX;
+        Vector2 potentialVerticalMove = Vector2.up * testHeight;
+        Vector2 testPos = _rb.position + potentialNudge + potentialVerticalMove;
 
-        bool leftInnerClear = !hitLeftInner || (hitLeftOuter && hitLeftInner.distance < _verticalProbeDistance);
-        bool rightInnerClear = !hitRightInner || (hitRightOuter && hitRightInner.distance < _verticalProbeDistance);
-
-        bool canCorrectLeft = hitLeftOuter && leftInnerClear;
-        bool canCorrectRight= hitRightOuter && rightInnerClear;
-
-        if (canCorrectLeft && canCorrectRight)
+        if (IsSpaceClear(testPos))
         {
+            correctionAmount = pushAmount * nudgeDir;
+            
+            if (_moveStats.DebugShowCornerCorrectionRays)
+                DrawDebugBox(testPos, _coll.bounds.size, Color.green, 0.05f);
+
+            return true;
+        }
+        else
+        {
+            if (_moveStats.DebugShowCornerCorrectionRays)
+                DrawDebugBox(testPos, _coll.bounds.size, Color.red, 0.05f);
+            
             return false;
         }
-
-        if (canCorrectLeft)
-        {
-            float pushAmount = _moveStats.CornerCorrectionWidth + CollisionPadding;
-            bool blockedRight =
-                Physics2D.Raycast(RayCastCorners.topRight, Vector2.right, pushAmount, _moveStats.GroundLayer);
-            
-            if (_moveStats.DebugShowCornerCorrectionRays) 
-                Debug.DrawRay(RayCastCorners.topRight, Vector2.right * pushAmount, blockedRight ? Color.red : Color.cyan);
-
-            if (!blockedRight)
-            {
-                correctionAmount = pushAmount;
-                return true;
-            }
-        }
+    }
+    
+    private void DrawDebugBox(Vector2 center, Vector2 size, Color color, float duration)
+    {
+        Vector2 halfSize = size / 2;
+        Vector2 topLeft = center + new Vector2(-halfSize.x, halfSize.y);
+        Vector2 topRight = center + new Vector2(halfSize.x, halfSize.y);
+        Vector2 bottomLeft = center + new Vector2(-halfSize.x, -halfSize.y);
+        Vector2 bottomRight = center + new Vector2(halfSize.x, -halfSize.y);
         
-        else if (canCorrectRight)
-        {
-            float pushAmount = _moveStats.CornerCorrectionWidth + CollisionPadding;
-            bool blockedLeft =
-                Physics2D.Raycast(RayCastCorners.topLeft, Vector2.left, pushAmount, _moveStats.GroundLayer);
-            
-            if (_moveStats.DebugShowCornerCorrectionRays) 
-                Debug.DrawRay(RayCastCorners.topLeft, Vector2.left * pushAmount, blockedLeft ? Color.red : Color.cyan);
-            
-            if (!blockedLeft)
-            {
-                correctionAmount = -pushAmount;
-                return true;
-            }
-        }
+        Debug.DrawLine(topLeft, topRight, color, duration);
+        Debug.DrawLine(topRight, bottomRight, color, duration);
+        Debug.DrawLine(bottomRight, bottomLeft, color, duration);
+        Debug.DrawLine(bottomLeft, topLeft, color, duration);
+    }
+
+    private bool IsSpaceClear(Vector2 targetPosition)
+    {
+        Vector2 checkSize = _coll.bounds.size - (Vector3.one * (CollisionPadding * 2f));
+        Vector2 center = targetPosition + _coll.offset;
         
-        return false;
+        ContactFilter2D filter = new ContactFilter2D();
+        filter.SetLayerMask(_moveStats.GroundLayer);
+        filter.useTriggers = false;
+
+        int hitCount = Physics2D.OverlapBox(center, checkSize, 0f, filter, _overlapBuffer);
+
+        return hitCount == 0;
     }
 
     private bool DetectHeadCornerCorrection(Vector2 velocity)
@@ -1111,6 +1434,11 @@ public class MovementController : MonoBehaviour
                     float push = (ceilingHit.point.y - CollisionPadding) - headOrigin.y;
                     if (push < 0 && Mathf.Abs(push) <= clearanceHeight + CollisionPadding)
                     {
+                        if (Mathf.Abs(push) > _moveStats.HorizontalPushDownMaximum)
+                        {
+                            validPush = false;
+                        }
+                        
                         Vector2 targetFootPos = footOrigin + (Vector2.right * directionX * CollisionPadding) + (Vector2.up * push);
                         bool floorBlocked = Physics2D.Raycast(targetFootPos, Vector2.down, CollisionPadding,
                             _moveStats.GroundLayer);

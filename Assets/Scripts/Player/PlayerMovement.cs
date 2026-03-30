@@ -88,6 +88,8 @@ public class PlayerMovement : MonoBehaviour
     private float _slopeDashAngle;
     private Quaternion _targetRotation = Quaternion.identity;
 
+    public bool IsRunning => InputManager.RunIsHeld;
+    
     private void Awake()
     {
         // Time.timeScale = 0.05f;
@@ -251,6 +253,11 @@ public class PlayerMovement : MonoBehaviour
             if ((Velocity.x > 0 && Controller.State.WallDirection == 1) ||
                 (Velocity.x < 0 && Controller.State.WallDirection == -1))
             {
+                if (Controller.IsStep(Velocity))
+                {
+                    return;
+                }
+                
                 Velocity.x = 0f;
             }
         }
@@ -262,7 +269,10 @@ public class PlayerMovement : MonoBehaviour
         {
             if (Velocity.y > 0)
             {
-                if (!IsDashing)
+                bool isSlideableCeiling =
+                    MoveStats.JumpFollowSlopesWhenHeadTouching && Controller.State.CeilingAngle > 0;
+                
+                if (!IsDashing && !isSlideableCeiling)
                 {
                     Velocity.y = 0f;
                 }
@@ -332,7 +342,9 @@ public class PlayerMovement : MonoBehaviour
                 StopWallSlide();
                 ResetWallJumpValues();
                 ResetDashes();
-                ResetDashValues();
+                DashLand();
+
+                Controller.LastLandingTime = Time.time;
             }
 
             bool isStable = Controller.State.SlopeAngle <= MoveStats.MaxSlopeAngle;
@@ -456,7 +468,7 @@ public class PlayerMovement : MonoBehaviour
                 return;
             }
             
-            if ((_isFalling || IsJumping || _isWallJumping || _isWallSlideFalling || _isAirDashing ||
+            if (!IsDashing && (_isFalling || IsJumping || _isWallJumping || _isWallSlideFalling || _isAirDashing ||
                  _isDashFastFalling || Controller.IsSliding) && _numberOfAirJumpsUsed < MoveStats.NumberOfAirJumpsAllowed)
             {
                 _isFastFalling = false;
@@ -494,6 +506,10 @@ public class PlayerMovement : MonoBehaviour
         _jumpBufferTimer = 0f;
         _numberOfAirJumpsUsed += numberOfAirJumpsUsed;
         Velocity.y = MoveStats.InitialJumpVelocity;
+
+        IsDashing = false;
+        _isAirDashing = false;
+        _isDashFastFalling = false;
         
         if (MoveStats.DebugTrackJumpHeight)
         {
@@ -958,59 +974,48 @@ public class PlayerMovement : MonoBehaviour
 
     private void CalculateDashDirection()
     {
-        _dashDirection = _moveInput;
-        TurnCheck(_dashDirection);
+        Vector2 input = _moveInput;
+        // if (input.magnitude > 0.1f) input.Normalize();
         
-        Vector2 closestDirection = Vector2.zero;
-        float minDistanece = Vector2.Distance(_dashDirection, MoveStats.DashDirections[0]);
+        TurnCheck(input);
 
-        for (int i = 0; i < MoveStats.DashDirections.Length; i++)
+        if (input == Vector2.zero)
         {
-            // skip if we hit it bang on
-            if (_dashDirection == MoveStats.DashDirections[i])
-            {
-                closestDirection = _dashDirection;
-                break;
-            }
-
-            float distance = Vector2.Distance(_dashDirection, MoveStats.DashDirections[i]);
-            
-            // check if this is a diagonal direction and apply bias
-            bool isDiagonal = (Mathf.Abs(MoveStats.DashDirections[i].x) == 1 &&
-                               Mathf.Abs(MoveStats.DashDirections[i].y) == 1);
-            if (isDiagonal)
-            {
-                distance -= MoveStats.DashDiagonallyBias;
-            }
-            
-            else if (distance < minDistanece)
-            {
-                minDistanece = distance;
-                closestDirection = MoveStats.DashDirections[i];
-            }
-        }
-        
-        // handle direction with NO input
-        if (closestDirection == Vector2.zero)
-        {
-            if (IsFacingRight)
-            {
-                closestDirection = Vector2.right;
-            }
-            else
-            {
-                closestDirection = Vector2.left;
-            }
+            _dashDirection = IsFacingRight ? Vector2.right : Vector2.left;
+            return;
         }
 
-        _dashIntentDirection = closestDirection;
+        bool isUpperHemisphere = input.y >= 0;
+        Vector2 verticalDirection = isUpperHemisphere ? Vector2.up : Vector2.down;
 
-        if (Controller.IsGrounded() && closestDirection.y < 0 && closestDirection.x != 0)
-        {
-            closestDirection = new Vector2(Mathf.Sign(closestDirection.x), 0);
-        }
+        float verticalAngleTolerance =
+            isUpperHemisphere ? MoveStats.DashUpwardAngleTolerance : MoveStats.DashDownwardAngleTolerance;
+        float verticalThreshold = Mathf.Cos(verticalAngleTolerance * Mathf.Deg2Rad);
+
+        float horizontalThreshold = Mathf.Cos(MoveStats.DashHorizontalAngleTolerance * Mathf.Deg2Rad);
         
-        _dashDirection = closestDirection;
+        Vector2 finalDir = Vector2.zero;
+
+        if (Vector2.Dot(input, verticalDirection) >= verticalThreshold)
+        {
+            finalDir = verticalDirection;
+        }
+        else if (Mathf.Abs(Vector2.Dot(input, Vector2.right)) >= horizontalThreshold)
+        {
+            finalDir = Mathf.Sign(input.x) == 1 ? Vector2.right : Vector2.left;
+        }
+        else
+        {
+            finalDir = new Vector2(Mathf.Sign(input.x), isUpperHemisphere ? 1 : -1).normalized;
+        }
+
+        _dashDirection = finalDir;
+        _dashIntentDirection = finalDir;
+
+        if (Controller.IsGrounded() && finalDir.y < 0 && finalDir.x != 0)
+        {
+            _dashDirection = new Vector2(Mathf.Sign(finalDir.x), 0);
+        }
     }
 
     private void InitiateDash()
@@ -1187,6 +1192,15 @@ public class PlayerMovement : MonoBehaviour
         _dashFastFallReleaseSpeed = 0f;
         _dashFastFallTime = 0f;
         _dashDirection = Vector2.zero;
+        _isPerformingSLopeDash = false;
+    }
+
+    private void DashLand()
+    {
+        _isDashFastFalling = false;
+        _dashOnGroundTimer = -0.01f;
+        _dashFastFallReleaseSpeed = 0f;
+        _dashFastFallTime = 0f;
         _isPerformingSLopeDash = false;
     }
 

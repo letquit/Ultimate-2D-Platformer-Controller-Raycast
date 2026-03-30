@@ -21,20 +21,28 @@ MonoBehaviour:
   WallJumpMoveAcceleration: 5
   WallJumpMoveDeceleration: 5
   MaxRunSpeed: 20
-  GroundLayer:
-    serializedVersion: 2
-    m_Bits: 64
-  UseHeadBumpSlide: 1
-  HeadBumpSlideSpeed: 13
-  HeadBumpBoxWidth: 0.3
-  HeadBumpBoxHeight: 0.1
-  MaxSlopeAngleForHeadBump: 5
   DashDirectionMatchesSlopeDirection: 1
   CanJumpOnMaxSlopes: 0
   JumpFollowSlopesWhenHeadTouching: 1
   DashFollowSlopesWhenHeadTouching: 1
   MaxSlopeAngle: 70
   SlideSpeed: 30
+  MatchVisualsToSlope: 1
+  SlopeAverageNormalsRayLength: 1
+  VisualRaycastWidth: 1.5
+  SlopeRotationSpeed: 20
+  MaxVisualRotationAngle: 45
+  OnlyVaultWhenRunning: 1
+  VaultMinHeight: 0.25
+  StepMaxHeight: 1.15
+  StepDetectionRayWidth: 0.1
+  GroundLayer:
+    serializedVersion: 2
+    m_Bits: 64
+  EnableCornerCorrection: 1
+  CornerCorrectionWidth: 0.3
+  HorizontalCornerCorrectionHeight: 0.6
+  HorizontalPushDownMaximum: 0.4
   JumpHeight: 6.5
   JumpHeightCompensationFactor: 1.054
   TimeTillJumpApex: 0.35
@@ -54,8 +62,10 @@ MonoBehaviour:
   MinAngleForWallSlide: 85
   MaxAngleForWallSlide: 95
   WallJumpDirection: {x: -20, y: 6.5}
-  WallJumpPostBufferTime: 0.125
+  WallJumpCoyoteTime: 0.125
+  WallJumpInputBufferDistance: 0.3
   WallJumpGravityOnReleaseMultiplier: 1
+  CancelDashWhenYouHitCeiling: 0
   DashTime: 0.11
   DashSpeed: 40
   TimeBtwDashesOnGround: 0.225
@@ -63,12 +73,16 @@ MonoBehaviour:
   NumberOfDashes: 2
   DashDiagonallyBias: 0.4
   DashBufferTime: 0.125
+  DashFreezeTime: 0.05
+  DashCoyoteTime: 0.125
   DashGravityOnReleaseMultiplier: 1
   DashTimeForUpwardsCancel: 0.027
+  DebugTrackJumpHeight: 0
   DebugShowIsGrounded: 1
   DebugShowHeadRays: 0
-  DebugShowHeadBumpBox: 0
+  DebugShowCornerCorrectionRays: 0
   DebugShowWallHit: 0
+  DebugShowWallJumpBufferBox: 0
   DebugShowSlopeNormal: 0
   DebugShowDashAngle: 0
   DebugShowDescendSlopeRay: 0
