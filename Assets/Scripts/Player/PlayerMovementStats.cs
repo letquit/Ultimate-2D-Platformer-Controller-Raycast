@@ -18,6 +18,14 @@ public class PlayerMovementStats : ScriptableObject
     [Header("Run")]
     [Range(1f, 100f)] public float MaxRunSpeed = 20f;
 
+    [Header("Platforms")] 
+    public bool InheritPlatformMomentum = true;
+    [Range(0f, 0.5f)] public float PlatformMomentumRetentionTime = 0.15f;
+    [Range(0f, 2f)] public float PlatformHorizontalMomentumMultiplier = 1f;
+    [Range(0f, 2f)] public float PlatformVerticalMomentumMultiplier = 1f;
+    [Range(0f, 100f)] public float MaxVerticalBoost = 10f;
+    [Range(1f, 5f)] public float VerticalLaunchMultiplierOnLaunchExit = 2f;
+
     [Header("Slopes")]
     public bool DashDirectionMatchesSlopeDirection = true;
     public bool CanJumpOnMaxSlopes = false;

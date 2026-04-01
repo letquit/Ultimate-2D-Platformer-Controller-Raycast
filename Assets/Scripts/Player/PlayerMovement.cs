@@ -2,11 +2,13 @@ using System;
 using UnityEngine;
 using UnityEngine.Serialization;
 
+[SelectionBase]
 public class PlayerMovement : MonoBehaviour
 {
     [Header("References")] public PlayerMovementStats MoveStats;
     [SerializeField] private Collider2D _coll;
     [SerializeField] private Transform _visualsTransform;
+    [SerializeField] private Transform _respawnPoint;
 
     private Rigidbody2D _rb;
 
@@ -87,6 +89,13 @@ public class PlayerMovement : MonoBehaviour
     private bool _isPerformingSLopeDash;
     private float _slopeDashAngle;
     private Quaternion _targetRotation = Quaternion.identity;
+    
+    // platforms
+    private Vector2 _storePlatformVelocity;
+    private float _platformMomentumRetentionTimer;
+    
+    // visuals
+    private VisualInterpolator _visuals;
 
     public bool IsRunning => InputManager.RunIsHeld;
     
@@ -96,6 +105,17 @@ public class PlayerMovement : MonoBehaviour
         IsFacingRight = true;
         _rb = GetComponent<Rigidbody2D>();
         Controller = GetComponent<MovementController>();
+        _visuals = GetComponentInChildren<VisualInterpolator>();
+    }
+
+    private void OnEnable()
+    {
+        Controller.OnCrush += HandleCrush;
+    }
+    
+    private void OnDisable()
+    {
+        Controller.OnCrush -= HandleCrush;
     }
 
     private void Update()
@@ -129,6 +149,7 @@ public class PlayerMovement : MonoBehaviour
         VelocityReset();
         PreventWalkStick();
         PreventCeilingStick();
+        CalculateRunOffMomentum();
         
         CalculateTargetRotation();
         
@@ -149,6 +170,8 @@ public class PlayerMovement : MonoBehaviour
         _jumpPressed = false;
         _jumpReleased = false;
         _dashPressed = false;
+        
+        _visuals.UpdatePhysicsState();
     }
 
     private void TrackJump()
@@ -185,7 +208,17 @@ public class PlayerMovement : MonoBehaviour
         }
         else
         {
-            Velocity.y = Mathf.Clamp(Velocity.y, -MoveStats.MaxFallSpeed, 50f);
+            float dynamicFallSpeed = MoveStats.MaxFallSpeed;
+
+            if (_platformMomentumRetentionTimer > 0f)
+            {
+                if (_storePlatformVelocity.y < -dynamicFallSpeed)
+                {
+                    dynamicFallSpeed = Mathf.Abs(_storePlatformVelocity.y);
+                }
+            }
+
+            Velocity.y = Mathf.Clamp(Velocity.y, -dynamicFallSpeed, 100f);
         }
     }
 
@@ -279,6 +312,30 @@ public class PlayerMovement : MonoBehaviour
             }
         }
     }
+
+    private void CalculateRunOffMomentum()
+    {
+        if (Controller.IsGrounded() || !Controller.State.WasGroundedLastFrame || IsJumping || _isWallJumping ||
+            Controller.PlatformFromLastFrame == null) return;
+
+        if (_platformMomentumRetentionTimer > 0f)
+        {
+            Vector2 platformVel = _storePlatformVelocity;
+
+            float hBoost = platformVel.x * MoveStats.PlatformHorizontalMomentumMultiplier;
+            Velocity.x += hBoost;
+
+            if (platformVel.y < 0f)
+            {
+                Velocity.y += platformVel.y;
+            }
+            else if (Controller.PlatformFromLastFrame.LaunchVerticallyOnExit)
+            {
+                float vBoost = platformVel.y * MoveStats.VerticalLaunchMultiplierOnLaunchExit;
+                Velocity.y += vBoost;
+            }
+        }
+    } 
     
     private void TurnCheck(Vector2 moveInput)
     {
@@ -317,6 +374,19 @@ public class PlayerMovement : MonoBehaviour
     {
         _visualsTransform.rotation = Quaternion.Slerp(_visualsTransform.rotation, _targetRotation,
             MoveStats.SlopeRotationSpeed * timeStep);
+
+        float angleDegrees = _visualsTransform.rotation.eulerAngles.z;
+        if (angleDegrees > 180) angleDegrees -= 360;
+        float angleRad = Mathf.Abs(angleDegrees * Mathf.Deg2Rad);
+        
+        float halfWidth = _coll.bounds.size.x / 2f;
+        float halfHeight = _coll.bounds.size.y / 2f;
+
+        float currentDistanceToBottom = (halfWidth * Mathf.Sin(angleRad)) + (halfHeight * Mathf.Cos(angleRad));
+        
+        float liftAmount = currentDistanceToBottom - halfHeight;
+
+        _visuals.PivotOffset = new Vector3(0f, -liftAmount, 0f);
     }
 
     #endregion
@@ -344,7 +414,7 @@ public class PlayerMovement : MonoBehaviour
                 ResetDashes();
                 DashLand();
 
-                Controller.LastLandingTime = Time.time;
+                Controller.UpdateSlopeMemory();
             }
 
             bool isStable = Controller.State.SlopeAngle <= MoveStats.MaxSlopeAngle;
@@ -510,6 +580,19 @@ public class PlayerMovement : MonoBehaviour
         IsDashing = false;
         _isAirDashing = false;
         _isDashFastFalling = false;
+
+        if (MoveStats.InheritPlatformMomentum && _platformMomentumRetentionTimer > 0f)
+        {
+            Vector2 platformVel = _storePlatformVelocity;
+
+            float hBoost = platformVel.x * MoveStats.PlatformHorizontalMomentumMultiplier;
+            float vBoost = platformVel.y * MoveStats.PlatformVerticalMomentumMultiplier;
+
+            vBoost = Mathf.Clamp(vBoost, 0f, MoveStats.MaxVerticalBoost);
+            
+            Velocity.x += hBoost;
+            Velocity.y += vBoost;
+        }
         
         if (MoveStats.DebugTrackJumpHeight)
         {
@@ -655,6 +738,13 @@ public class PlayerMovement : MonoBehaviour
         else if (_isWallSliding && !isTouchingSideWall)
         {
             _isWallSlideFalling = true;
+
+            if (_platformMomentumRetentionTimer > 0f)
+            {
+                Velocity.y += _storePlatformVelocity.y;
+                Velocity.x += _storePlatformVelocity.x;
+            }
+            
             StopWallSlide();
         }
 
@@ -741,6 +831,13 @@ public class PlayerMovement : MonoBehaviour
 
                 if (isValidWall)
                 {
+                    var platform = hit.collider.GetComponent<IVelocityInheritable>();
+                    if (platform != null)
+                    {
+                        _storePlatformVelocity = platform.GetVelocity();
+                        _platformMomentumRetentionTimer = MoveStats.PlatformMomentumRetentionTime;
+                    }
+                    
                     _lastWallDir = -(int)Mathf.Sign(hit.normal.x);
                     
                     InitiateWallJump();
@@ -815,8 +912,28 @@ public class PlayerMovement : MonoBehaviour
         _wallJumpTime = 0f;
         _numberOfAirJumpsUsed = 0;
 
+        float calculatedBaseX = Mathf.Abs(MoveStats.WallJumpDirection.x) * -_lastWallDir;
+
         Velocity.y = MoveStats.InitialWallJumpVelocity;
-        Velocity.x = Mathf.Abs(MoveStats.WallJumpDirection.x) * -_lastWallDir;
+        Velocity.x = calculatedBaseX;
+        
+        if (MoveStats.InheritPlatformMomentum && _platformMomentumRetentionTimer > 0f)
+        {
+            Vector2 platformVel = _storePlatformVelocity;
+
+            float hBoost = platformVel.x * MoveStats.PlatformHorizontalMomentumMultiplier;
+            float vBoost = platformVel.y * MoveStats.PlatformVerticalMomentumMultiplier;
+
+            vBoost = Mathf.Clamp(vBoost, 0f, MoveStats.MaxVerticalBoost);
+
+            if (Mathf.Sign(hBoost) != Mathf.Sign(calculatedBaseX) && Mathf.Abs(hBoost) > 0.01f)
+            {
+                hBoost = 0f;
+            }
+            
+            Velocity.x += hBoost;
+            Velocity.y += vBoost;
+        }
     }
 
     private void WallJump(float timeStep)
@@ -1246,6 +1363,9 @@ public class PlayerMovement : MonoBehaviour
         
         // dash buffer timer
         _dashBufferTimer -= timeStep;
+        
+        // platform momentum timer
+        ManagePlatformMomentum(timeStep);
     }
 
     private void HandleCoyoteTimer(float timeStep)
@@ -1278,6 +1398,37 @@ public class PlayerMovement : MonoBehaviour
         {
             _dashCoyoteTimer -= timeStep;
         }
+    }
+
+    private void ManagePlatformMomentum(float timeStep)
+    {
+        if (Controller.LastKnownPlatform != null)
+        {
+            _storePlatformVelocity = Controller.LastKnownPlatform.GetVelocity();
+            _platformMomentumRetentionTimer = MoveStats.PlatformMomentumRetentionTime;
+        }
+        else
+        {
+            if (_platformMomentumRetentionTimer > 0f)
+            {
+                _platformMomentumRetentionTimer -= timeStep;
+
+                if (_platformMomentumRetentionTimer <= 0f)
+                {
+                    _storePlatformVelocity = Vector2.zero;
+                }
+            }
+        }
+    }
+
+    #endregion
+
+    #region Crush
+
+    public void HandleCrush()
+    {
+        Debug.Log("crushed");
+        _visuals.ForceTeleport(_respawnPoint.position);
     }
 
     #endregion
